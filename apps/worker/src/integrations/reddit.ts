@@ -497,8 +497,8 @@ export async function submitRedditImagePost(
         const page = await context.newPage();
 
         // Navigate to subreddit submission page
-        await page.goto(`https://www.reddit.com/r/${subreddit}/submit`, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(randomDelay(2000, 3000));
+        await page.goto(`https://www.reddit.com/r/${subreddit}/submit`, { waitUntil: 'commit', timeout: 60000 });
+        await page.waitForTimeout(randomDelay(3000, 5000));
 
         // Check if logged in
         if (page.url().includes('login')) {
