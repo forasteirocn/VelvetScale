@@ -122,7 +122,11 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 `→ Conecta o Reddit (só precisa 1 vez)\n\n` +
 
                 `📷 Foto + legenda\n` +
-                `→ Agenda post automático no Reddit\n\n` +
+                `→ Agenda post automatico no Reddit\n\n` +
+
+                `📷 Foto + /postar na legenda\n` +
+                `→ Posta AGORA no Reddit (sem agendar)\n` +
+                `Ex: envie foto com legenda "/postar bom dia"\n\n` +
 
                 `/fila\n` +
                 `→ Mostra posts na fila de espera\n\n` +
@@ -321,18 +325,20 @@ async function handleTextMessage(update: TelegramUpdate): Promise<void> {
 }
 
 /**
- * Handle a photo message — schedules for optimal posting
+ * Handle a photo message — /postar = immediate, otherwise schedules
  */
 async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const msg = update.message!;
     const chatId = msg.chat.id;
-    const caption = msg.caption || '';
+    const rawCaption = msg.caption || '';
     const telegramId = msg.from.id.toString();
+    const isImmediate = rawCaption.toLowerCase().startsWith('/postar');
+    const caption = isImmediate ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥' : rawCaption || '🔥';
 
     // Get highest resolution photo
     const bestPhoto = msg.photo![msg.photo!.length - 1];
 
-    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}"`);
+    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : 'agendado'})`);
 
     await sendTypingAction(chatId);
 
@@ -361,22 +367,82 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
         return;
     }
 
-    await sendTelegramMessage(chatId, '⏳ Agendando post... Melhorando legenda com IA.');
+    if (isImmediate) {
+        // === IMMEDIATE POST ===
+        // Get best subreddit
+        const { data: subs } = await supabase
+            .from('subreddits')
+            .select('*')
+            .eq('model_id', model.id)
+            .eq('is_approved', true)
+            .order('last_posted_at', { ascending: true, nullsFirst: true })
+            .limit(1);
 
-    // Schedule via scheduler
-    const { schedulePhotos } = await import('../scheduler');
-    await schedulePhotos(
-        model.id,
-        [{ url: photoUrl, caption: caption || '🔥' }],
-        chatId
-    );
+        const targetSub = subs?.[0]?.name;
+        if (!targetSub) {
+            await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
+            return;
+        }
 
-    // Log
-    await supabase.from('agent_logs').insert({
-        model_id: model.id,
-        action: 'photo_scheduled',
-        details: { caption },
-    });
+        await sendTelegramMessage(chatId, `Postando agora em r/${targetSub.replace(/_/g, '\\_')}...`);
+
+        // Improve caption with Claude
+        const { improveCaption } = await import('./claude');
+        const improved = await improveCaption(
+            caption,
+            targetSub,
+            model.bio || '',
+            model.persona || '',
+            { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+        );
+
+        // Post to Reddit immediately
+        const { submitRedditImagePost } = await import('./reddit');
+        const result = await submitRedditImagePost(
+            model.id,
+            targetSub,
+            improved.title,
+            photoUrl,
+            true
+        );
+
+        if (result.success) {
+            const safeSub = targetSub.replace(/_/g, '\\_');
+            await sendTelegramMessage(chatId, `Postado em r/${safeSub}!\n\n${result.url || ''}`);
+
+            await supabase
+                .from('subreddits')
+                .update({ last_posted_at: new Date().toISOString() })
+                .eq('model_id', model.id)
+                .eq('name', targetSub);
+        } else {
+            const safeError = (result.error || 'Erro desconhecido').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
+            await sendTelegramMessage(chatId, `Erro ao postar: ${safeError}`);
+        }
+
+        await supabase.from('agent_logs').insert({
+            model_id: model.id,
+            action: 'photo_posted_immediate',
+            details: { subreddit: targetSub, caption: improved.title, success: result.success },
+        });
+
+    } else {
+        // === SCHEDULED POST ===
+        await sendTelegramMessage(chatId, 'Agendando post... Melhorando legenda com IA.');
+
+        const { schedulePhotos } = await import('../scheduler');
+        await schedulePhotos(
+            model.id,
+            [{ url: photoUrl, caption }],
+            chatId
+        );
+
+        await supabase.from('agent_logs').insert({
+            model_id: model.id,
+            action: 'photo_scheduled',
+            details: { caption },
+        });
+    }
 }
 
 /**
