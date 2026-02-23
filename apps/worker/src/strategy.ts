@@ -1,0 +1,468 @@
+import { getSupabaseAdmin } from '@velvetscale/db';
+import { sendTelegramMessage } from './integrations/telegram';
+import { improveCaption, pickBestSubForCaption } from './integrations/claude';
+import Anthropic from '@anthropic-ai/sdk';
+
+// =============================================
+// VelvetScale Strategy Engine
+// AI-powered decisions for every post
+// =============================================
+
+const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+interface SubScore {
+    name: string;
+    score: number;
+    reason: string;
+    bestHourUTC: number;
+}
+
+interface PostStrategy {
+    subreddit: string;
+    title: string;
+    scheduledFor: Date;
+    reason: string;
+}
+
+/**
+ * The main entry point: analyze a photo and create an intelligent posting strategy
+ * 1 photo → 3 posts in 3 different subs at optimal times
+ */
+export async function analyzeAndSchedule(
+    modelId: string,
+    photos: Array<{ url: string; caption: string }>,
+    chatId: number
+): Promise<void> {
+    const supabase = getSupabaseAdmin();
+
+    // --- Gather all intelligence ---
+
+    // 1. Get model info
+    const { data: model } = await supabase
+        .from('models')
+        .select('*')
+        .eq('id', modelId)
+        .single();
+
+    if (!model) return;
+
+    // 2. Get all approved subs (not banned)
+    const { data: subs } = await supabase
+        .from('subreddits')
+        .select('name, last_posted_at, cooldown_hours, engagement_score, is_banned, member_count')
+        .eq('model_id', modelId)
+        .eq('is_approved', true)
+        .eq('is_banned', false);
+
+    if (!subs?.length) {
+        await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado. Use "encontrar subreddits" primeiro.');
+        return;
+    }
+
+    // 3. Get posting history (last 30 days) — performance data
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const { data: recentPosts } = await supabase
+        .from('posts')
+        .select('subreddit, upvotes, comments_count, status, published_at')
+        .eq('model_id', modelId)
+        .eq('platform', 'reddit')
+        .gte('published_at', thirtyDaysAgo.toISOString())
+        .order('published_at', { ascending: false })
+        .limit(50);
+
+    // 4. Get sub performance metrics
+    const { data: perfData } = await supabase
+        .from('sub_performance')
+        .select('*')
+        .eq('model_id', modelId);
+
+    // 5. Get recently scheduled posts (avoid double-posting to same sub)
+    const { data: scheduled } = await supabase
+        .from('scheduled_posts')
+        .select('target_subreddit, scheduled_for')
+        .eq('model_id', modelId)
+        .in('status', ['ready', 'queued', 'processing']);
+
+    const recentlyScheduledSubs = new Set(scheduled?.map(s => s.target_subreddit) || []);
+
+    // --- Build context for Claude ---
+    const subContext = subs.map(sub => {
+        const posts = recentPosts?.filter(p => p.subreddit === sub.name) || [];
+        const perf = perfData?.find(p => p.subreddit === sub.name);
+        const totalUpvotes = posts.reduce((sum, p) => sum + (p.upvotes || 0), 0);
+        const avgUpvotes = posts.length > 0 ? Math.round(totalUpvotes / posts.length) : 0;
+        const lastPosted = sub.last_posted_at ? timeSince(sub.last_posted_at) : 'nunca';
+        const isOnCooldown = recentlyScheduledSubs.has(sub.name);
+
+        return {
+            name: sub.name,
+            avgUpvotes,
+            totalPosts: posts.length,
+            postsRemoved: perf?.posts_removed || 0,
+            lastPosted,
+            memberCount: sub.member_count || 0,
+            engagementScore: sub.engagement_score || 0,
+            isOnCooldown,
+            bestHour: perf?.best_posting_hour,
+        };
+    });
+
+    // Filter out subs on cooldown
+    const availableSubs = subContext.filter(s => !s.isOnCooldown);
+    if (availableSubs.length === 0) {
+        await sendTelegramMessage(chatId, '⏳ Todos os subs estão em cooldown. Tente mais tarde!');
+        return;
+    }
+
+    // Process each photo
+    for (const photo of photos) {
+        await sendTelegramMessage(chatId, '🧠 Analisando estrategia para sua foto...');
+
+        const strategy = await getPostingStrategy(
+            photo.caption,
+            availableSubs,
+            model.bio || '',
+            model.persona || ''
+        );
+
+        if (strategy.length === 0) {
+            await sendTelegramMessage(chatId, '⚠️ Nao consegui definir uma estrategia agora. Tente novamente.');
+            continue;
+        }
+
+        // Schedule each post from the strategy
+        const scheduledPosts: Array<{ sub: string; time: Date; title: string; reason: string }> = [];
+
+        for (const plan of strategy) {
+            // Improve caption specifically for this sub
+            let title = plan.title;
+            try {
+                const improved = await improveCaption(
+                    photo.caption || '🔥',
+                    plan.subreddit,
+                    model.bio || '',
+                    model.persona || '',
+                    { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+                );
+                title = improved.title;
+            } catch {
+                // Use Claude's strategy title as fallback
+            }
+
+            const { data: post } = await supabase
+                .from('scheduled_posts')
+                .insert({
+                    model_id: modelId,
+                    photo_url: photo.url,
+                    original_caption: photo.caption,
+                    improved_title: title,
+                    target_subreddit: plan.subreddit,
+                    scheduled_for: plan.scheduledFor.toISOString(),
+                    status: 'ready',
+                })
+                .select('id')
+                .single();
+
+            if (post) {
+                scheduledPosts.push({
+                    sub: plan.subreddit,
+                    time: plan.scheduledFor,
+                    title,
+                    reason: plan.reason,
+                });
+            }
+        }
+
+        // Send intelligent summary to model
+        if (scheduledPosts.length > 0) {
+            let msg = `🧠 Estrategia definida! ${scheduledPosts.length} post(s):\n\n`;
+            for (const sp of scheduledPosts) {
+                const brTime = sp.time.toLocaleTimeString('pt-BR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    timeZone: 'America/Sao_Paulo',
+                });
+                const safeSub = sp.sub.replace(/_/g, '\\_');
+                const safeReason = sp.reason.replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 120);
+                msg += `${brTime} BRT - r/${safeSub}\n${safeReason}\n\n`;
+            }
+            msg += 'Posts serao publicados automaticamente.';
+            await sendTelegramMessage(chatId, msg);
+        }
+    }
+
+    // Log
+    await supabase.from('agent_logs').insert({
+        model_id: modelId,
+        action: 'strategic_schedule',
+        details: { photos: photos.length },
+    });
+}
+
+/**
+ * Ask Claude for a strategic posting plan
+ * Returns top 3 subs with optimal times and justification
+ */
+async function getPostingStrategy(
+    caption: string,
+    availableSubs: Array<{
+        name: string;
+        avgUpvotes: number;
+        totalPosts: number;
+        postsRemoved: number;
+        lastPosted: string;
+        memberCount: number;
+        engagementScore: number;
+        bestHour: number | null | undefined;
+    }>,
+    modelBio: string,
+    persona: string
+): Promise<PostStrategy[]> {
+    // Sort by engagement score desc, take top 40 for Claude
+    const candidates = [...availableSubs]
+        .sort((a, b) => (b.engagementScore + b.avgUpvotes) - (a.engagementScore + a.avgUpvotes))
+        .slice(0, 40);
+
+    const subsReport = candidates.map(s =>
+        `- r/${s.name}: ${s.totalPosts} posts, avg ${s.avgUpvotes} upvotes, ${s.postsRemoved} removidos, último post: ${s.lastPosted}, ${s.memberCount > 0 ? s.memberCount + ' membros' : 'membros desconhecidos'}`
+    ).join('\n');
+
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 800,
+            system: `You are an expert Reddit marketing strategist for adult content creators.
+Your job is to choose the BEST 3 subreddits for a photo post, with optimal posting times.
+
+KEY PRINCIPLES:
+- Choose subs where the content will naturally fit the community
+- Prioritize subs with high historical performance (upvotes)
+- Avoid subs where posts were removed (sign of bad fit or ban)
+- Prefer diverse subs (don't pick 3 similar ones — spread reach)
+- For timing: peak engagement on NSFW subs is typically 10-14h EST on weekdays, 8-12h EST on weekends
+- Space posts at least 2 hours apart to avoid looking like spam
+- Consider the day of week: weekdays vs weekends have different peak times
+
+The model's persona: ${persona || 'friendly, flirty, confident'}
+
+Respond with VALID JSON array of exactly 3 objects:
+[
+  { "subreddit": "SubName", "hourEST": 12, "reason": "Brief reason in Portuguese" },
+  ...
+]
+
+Keep reasons SHORT (under 100 chars), in Portuguese, explaining WHY this sub.`,
+            messages: [{
+                role: 'user',
+                content: `Legenda da foto: "${caption}"
+Bio da modelo: ${modelBio}
+
+Dados dos subreddits disponíveis:
+${subsReport}
+
+Data/hora atual (BRT): ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+Dia da semana: ${new Date().toLocaleDateString('pt-BR', { weekday: 'long', timeZone: 'America/Sao_Paulo' })}
+
+Escolha os 3 MELHORES subs e horários para esta foto.`,
+            }],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) return [];
+
+        const picks: Array<{ subreddit: string; hourEST: number; reason: string }> = JSON.parse(jsonMatch[0]);
+
+        const now = new Date();
+        const strategies: PostStrategy[] = [];
+
+        for (let i = 0; i < Math.min(picks.length, 3); i++) {
+            const pick = picks[i];
+
+            // Verify sub exists in our list
+            const validSub = availableSubs.find(
+                s => s.name.toLowerCase() === pick.subreddit.toLowerCase()
+            );
+            if (!validSub) continue;
+
+            // Calculate the schedule time
+            const scheduledFor = calculateScheduleTime(pick.hourEST, i, now);
+
+            strategies.push({
+                subreddit: validSub.name,
+                title: caption, // Will be improved later by improveCaption
+                scheduledFor,
+                reason: pick.reason,
+            });
+
+            console.log(`🎯 Strategy: r/${validSub.name} @ ${pick.hourEST}h EST — ${pick.reason}`);
+        }
+
+        return strategies;
+
+    } catch (err) {
+        console.error('❌ Strategy error:', err);
+        return [];
+    }
+}
+
+/**
+ * Calculate when to schedule a post given the target EST hour
+ * If the target hour already passed today, schedule for tomorrow
+ * Spaces posts by index (2h gap minimum)
+ */
+function calculateScheduleTime(targetHourEST: number, index: number, now: Date): Date {
+    // Add spacing: each subsequent post is 2h later
+    const adjustedHour = targetHourEST + (index * 2);
+
+    // Convert EST to UTC (EST = UTC-5)
+    const utcHour = adjustedHour + 5;
+
+    const scheduled = new Date(now);
+    scheduled.setUTCHours(utcHour, Math.floor(Math.random() * 25) + 5, 0, 0); // Random minute 5-29
+
+    // If this time already passed today, schedule for tomorrow
+    if (scheduled <= now) {
+        scheduled.setDate(scheduled.getDate() + 1);
+    }
+
+    return scheduled;
+}
+
+/**
+ * Immediate intelligent post — analyzes and posts NOW
+ */
+export async function intelligentImmediatePost(
+    modelId: string,
+    photoUrl: string,
+    caption: string,
+    chatId: number
+): Promise<void> {
+    const supabase = getSupabaseAdmin();
+
+    const { data: model } = await supabase
+        .from('models')
+        .select('*')
+        .eq('id', modelId)
+        .single();
+
+    if (!model) return;
+
+    const { data: subs } = await supabase
+        .from('subreddits')
+        .select('name, engagement_score, last_posted_at, is_banned')
+        .eq('model_id', modelId)
+        .eq('is_approved', true)
+        .eq('is_banned', false);
+
+    if (!subs?.length) {
+        await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
+        return;
+    }
+
+    // Get historical performance
+    const { data: perfData } = await supabase
+        .from('sub_performance')
+        .select('subreddit, avg_upvotes, posts_removed')
+        .eq('model_id', modelId);
+
+    const subNames = subs.map(s => s.name);
+
+    // Build context for smart pick
+    const subInfo = subs.map(s => {
+        const perf = perfData?.find(p => p.subreddit === s.name);
+        return `- r/${s.name}: engagement ${s.engagement_score || 0}, avg upvotes ${perf?.avg_upvotes || 0}, removidos ${perf?.posts_removed || 0}`;
+    }).join('\n');
+
+    await sendTelegramMessage(chatId, '🧠 Analisando melhor sub para sua foto...');
+
+    // Ask Claude for the single best sub
+    let targetSub: string;
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 100,
+            system: `Pick the single BEST subreddit for this photo post.
+Consider: caption vibe, subreddit culture fit, historical performance.
+Respond with ONLY the subreddit name. No "r/", no explanation.`,
+            messages: [{
+                role: 'user',
+                content: `Caption: "${caption}"
+
+Available subs with performance data:
+${subInfo}
+
+Which ONE sub is the best match?`,
+            }],
+        });
+
+        const chosen = response.content[0].type === 'text'
+            ? response.content[0].text.trim().replace(/^r\//, '').replace(/[^a-zA-Z0-9_]/g, '')
+            : '';
+
+        targetSub = subNames.find(s => s.toLowerCase() === chosen.toLowerCase()) || subNames[Math.floor(Math.random() * subNames.length)];
+        console.log(`🎯 Claude chose: r/${targetSub} for immediate post`);
+    } catch {
+        targetSub = subNames[Math.floor(Math.random() * subNames.length)];
+    }
+
+    const safeSub = targetSub.replace(/_/g, '\\_');
+    await sendTelegramMessage(chatId, `Postando agora em r/${safeSub}...`);
+
+    // Improve caption
+    let title = caption;
+    try {
+        const improved = await improveCaption(
+            caption || '🔥',
+            targetSub,
+            model.bio || '',
+            model.persona || '',
+            { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+        );
+        title = improved.title;
+    } catch { /* use original */ }
+
+    // Post via Playwright
+    const { submitRedditImagePost } = await import('./integrations/reddit');
+    const result = await submitRedditImagePost(
+        modelId,
+        targetSub,
+        title,
+        photoUrl,
+        true
+    );
+
+    if (result.success) {
+        await sendTelegramMessage(chatId, `Postado em r/${safeSub}!\n\n${result.url || ''}`);
+
+        await supabase
+            .from('subreddits')
+            .update({ last_posted_at: new Date().toISOString() })
+            .eq('model_id', modelId)
+            .eq('name', targetSub);
+    } else {
+        const safeError = (result.error || 'Erro desconhecido').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
+        await sendTelegramMessage(chatId, `Erro ao postar: ${safeError}`);
+    }
+
+    await supabase.from('agent_logs').insert({
+        model_id: modelId,
+        action: 'intelligent_immediate_post',
+        details: { subreddit: targetSub, caption: title, success: result.success },
+    });
+}
+
+// --- Helpers ---
+
+function timeSince(dateStr: string): string {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    if (hours < 1) return 'agora';
+    if (hours < 24) return `${hours}h atrás`;
+    const days = Math.floor(hours / 24);
+    return `${days}d atrás`;
+}

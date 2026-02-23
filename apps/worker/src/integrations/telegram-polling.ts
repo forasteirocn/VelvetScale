@@ -243,6 +243,15 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             return;
         }
 
+        // === Handle /aprovar command ===
+        if (update.message?.text?.startsWith('/aprovar')) {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            const subArg = update.message.text.replace('/aprovar', '').trim();
+            await handleAprovarCommand(chatId, telegramId, subArg);
+            return;
+        }
+
         // === Handle /fila command ===
         if (update.message?.text === '/fila') {
             const chatId = update.message.chat.id;
@@ -368,83 +377,17 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     }
 
     if (isImmediate) {
-        // === IMMEDIATE POST ===
-        // Get all approved subreddits
-        const { data: subs } = await supabase
-            .from('subreddits')
-            .select('name')
-            .eq('model_id', model.id)
-            .eq('is_approved', true);
-
-        const subNames = subs?.map(s => s.name) || [];
-        if (subNames.length === 0) {
-            await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
-            return;
-        }
-
-        await sendTelegramMessage(chatId, 'Analisando melhor sub para sua foto...');
-
-        // Ask Claude to pick the best sub for this caption
-        const { pickBestSubForCaption, improveCaption } = await import('./claude');
-        const targetSub = await pickBestSubForCaption(caption, subNames);
-
-        await sendTelegramMessage(chatId, `Postando agora em r/${targetSub.replace(/_/g, '\\_')}...`);
-
-        // Improve caption with Claude
-        const improved = await improveCaption(
-            caption,
-            targetSub,
-            model.bio || '',
-            model.persona || '',
-            { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
-        );
-
-        // Post to Reddit immediately
-        const { submitRedditImagePost } = await import('./reddit');
-        const result = await submitRedditImagePost(
-            model.id,
-            targetSub,
-            improved.title,
-            photoUrl,
-            true
-        );
-
-        if (result.success) {
-            const safeSub = targetSub.replace(/_/g, '\\_');
-            await sendTelegramMessage(chatId, `Postado em r/${safeSub}!\n\n${result.url || ''}`);
-
-            await supabase
-                .from('subreddits')
-                .update({ last_posted_at: new Date().toISOString() })
-                .eq('model_id', model.id)
-                .eq('name', targetSub);
-        } else {
-            const safeError = (result.error || 'Erro desconhecido').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
-            await sendTelegramMessage(chatId, `Erro ao postar: ${safeError}`);
-        }
-
-        await supabase.from('agent_logs').insert({
-            model_id: model.id,
-            action: 'photo_posted_immediate',
-            details: { subreddit: targetSub, caption: improved.title, success: result.success },
-        });
-
+        // === INTELLIGENT IMMEDIATE POST ===
+        const { intelligentImmediatePost } = await import('../strategy');
+        await intelligentImmediatePost(model.id, photoUrl, caption, chatId);
     } else {
-        // === SCHEDULED POST ===
-        await sendTelegramMessage(chatId, 'Agendando post... Melhorando legenda com IA.');
-
-        const { schedulePhotos } = await import('../scheduler');
-        await schedulePhotos(
+        // === STRATEGIC SCHEDULING (1 foto → 3 subs) ===
+        const { analyzeAndSchedule } = await import('../strategy');
+        await analyzeAndSchedule(
             model.id,
             [{ url: photoUrl, caption }],
             chatId
         );
-
-        await supabase.from('agent_logs').insert({
-            model_id: model.id,
-            action: 'photo_scheduled',
-            details: { caption },
-        });
     }
 }
 
@@ -488,6 +431,58 @@ async function handleFilaCommand(chatId: number, telegramId: string): Promise<vo
     }
 
     await sendTelegramMessage(chatId, msg);
+}
+
+/**
+ * Handle /aprovar command — approve AI-suggested subreddits
+ */
+async function handleAprovarCommand(chatId: number, telegramId: string, subArg: string): Promise<void> {
+    const supabase = getSupabaseAdmin();
+
+    const { data: model } = await supabase
+        .from('models')
+        .select('id')
+        .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+        .single();
+
+    if (!model) {
+        await sendTelegramMessage(chatId, '⚠️ Conta nao encontrada.');
+        return;
+    }
+
+    if (subArg) {
+        // Approve specific sub
+        const { data, error } = await supabase
+            .from('subreddits')
+            .update({ is_approved: true })
+            .eq('model_id', model.id)
+            .eq('name', subArg)
+            .eq('is_approved', false)
+            .select('name');
+
+        if (data?.length) {
+            const safeName = subArg.replace(/_/g, '\\_');
+            await sendTelegramMessage(chatId, `r/${safeName} aprovado!`);
+        } else {
+            await sendTelegramMessage(chatId, `Sub "${subArg}" nao encontrado ou ja aprovado.`);
+        }
+    } else {
+        // Approve ALL pending subs
+        const { data } = await supabase
+            .from('subreddits')
+            .update({ is_approved: true })
+            .eq('model_id', model.id)
+            .eq('is_approved', false)
+            .eq('suggested_by_ai', true)
+            .select('name');
+
+        const count = data?.length || 0;
+        if (count > 0) {
+            await sendTelegramMessage(chatId, `${count} sub(s) aprovado(s)!`);
+        } else {
+            await sendTelegramMessage(chatId, 'Nenhum sub pendente de aprovacao.');
+        }
+    }
 }
 
 function sleep(ms: number): Promise<void> {

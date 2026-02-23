@@ -7,6 +7,9 @@ import { initQueues } from './queues';
 import { closeBrowser } from './integrations/reddit';
 import { startPolling, stopPolling } from './integrations/telegram-polling';
 import { startScheduler, stopScheduler } from './scheduler';
+import { startEngagementManager, stopEngagementManager } from './engagement';
+import { startKarmaBuilder, stopKarmaBuilder } from './karma';
+import { startSubDiscovery, stopSubDiscovery } from './discovery-smart';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -34,8 +37,11 @@ async function main() {
         // Start Telegram long polling (no webhook needed!)
         await startPolling();
 
-        // Start post scheduler (checks every 5 min)
-        startScheduler();
+        // Start all intelligent modules
+        startScheduler();          // Posts agendados (5 min)
+        startEngagementManager();  // Responde comentários (30 min)
+        startKarmaBuilder();       // Constrói karma (2h)
+        startSubDiscovery();       // Descobre subs (24h)
 
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);
@@ -53,6 +59,9 @@ process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down...');
     stopPolling();
     stopScheduler();
+    stopEngagementManager();
+    stopKarmaBuilder();
+    stopSubDiscovery();
     await closeBrowser();
     process.exit(0);
 });
@@ -60,6 +69,9 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
     stopPolling();
     stopScheduler();
+    stopEngagementManager();
+    stopKarmaBuilder();
+    stopSubDiscovery();
     await closeBrowser();
     process.exit(0);
 });
