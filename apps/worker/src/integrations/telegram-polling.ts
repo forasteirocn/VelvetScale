@@ -156,15 +156,31 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             console.log(`🔐 Login Reddit para modelo ${model.id}: @${username}`);
 
             // Do the login via Playwright
-            const { loginReddit } = await import('./reddit');
+            const { loginReddit, importSubreddits } = await import('./reddit');
             const result = await loginReddit(model.id, username, password, chatId);
 
             if (result.success) {
                 await sendTelegramMessage(
                     chatId,
-                    `✅ *Reddit conectado!*\n\nUsuário: ${username}\nSessão salva. Agora você pode postar!`
+                    `✅ *Reddit conectado!*\n\nUsuário: ${username}\n\n⏳ Importando seus subreddits...`
                 );
                 console.log(`✅ Reddit login OK: @${username}`);
+
+                // Auto-import subreddits
+                const importResult = await importSubreddits(model.id);
+                if (importResult.imported > 0) {
+                    const subList = importResult.subs.slice(0, 10).map(s => `• r/${s}`).join('\n');
+                    const extra = importResult.subs.length > 10 ? `\n...e mais ${importResult.subs.length - 10}` : '';
+                    await sendTelegramMessage(
+                        chatId,
+                        `📋 *${importResult.imported} subreddits importados!*\n\n${subList}${extra}\n\n📸 Agora envie uma foto pra agendar um post!`
+                    );
+                } else {
+                    await sendTelegramMessage(
+                        chatId,
+                        '⚠️ Não encontrei subreddits na conta. Use "encontrar subreddits" pra descobrir os melhores!'
+                    );
+                }
             } else {
                 // Sanitize error for Telegram (special chars break markdown)
                 const safeError = (result.error || 'Unknown error').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);

@@ -265,6 +265,126 @@ async function waitForManualLogin(page: Page, timeoutMs: number): Promise<boolea
     return false;
 }
 
+// =============================================
+// Import Subreddits from Reddit Profile
+// =============================================
+
+/**
+ * Import subreddits the user is subscribed to on Reddit
+ * Called automatically after login
+ */
+export async function importSubreddits(
+    modelId: string
+): Promise<{ success: boolean; imported: number; subs: string[]; error?: string }> {
+    let context: BrowserContext | null = null;
+
+    try {
+        context = await getModelContext(modelId);
+        const page = await context.newPage();
+
+        console.log('📋 Importando subreddits...');
+
+        // Go to the user's subreddit list via old Reddit (easier to scrape)
+        await page.goto('https://old.reddit.com/subreddits/mine/', {
+            waitUntil: 'commit',
+            timeout: 30000,
+        });
+        await page.waitForTimeout(3000);
+
+        // Check if we're logged in
+        const loggedIn = await page.locator('.user a').isVisible({ timeout: 3000 }).catch(() => false);
+        if (!loggedIn) {
+            // Try new Reddit
+            await page.goto('https://www.reddit.com/subreddits/', {
+                waitUntil: 'commit',
+                timeout: 30000,
+            });
+            await page.waitForTimeout(3000);
+        }
+
+        // Scrape subreddit names from the page
+        const subNames: string[] = [];
+
+        // Try old Reddit format first
+        const oldRedditSubs = await page.locator('.subscription-box .title a.title').allTextContents().catch(() => []);
+        if (oldRedditSubs.length > 0) {
+            for (const name of oldRedditSubs) {
+                const clean = name.replace('/r/', '').replace('r/', '').trim();
+                if (clean) subNames.push(clean);
+            }
+        }
+
+        // Try alternative selectors
+        if (subNames.length === 0) {
+            // Try extracting from sidebar or subscription list
+            const links = await page.locator('a[href*="/r/"]').allTextContents().catch(() => []);
+            for (const text of links) {
+                const match = text.match(/r\/([a-zA-Z0-9_]+)/);
+                if (match && match[1] && match[1].length > 1) {
+                    subNames.push(match[1]);
+                }
+            }
+        }
+
+        // Also try scraping from href attributes
+        if (subNames.length === 0) {
+            const hrefs = await page.locator('a[href*="/r/"]').evaluateAll(
+                (els: Element[]) => els.map(el => el.getAttribute('href') || '')
+            ).catch(() => []);
+
+            for (const href of hrefs) {
+                const match = href.match(/\/r\/([a-zA-Z0-9_]+)/);
+                if (match && match[1] && match[1].length > 2) {
+                    subNames.push(match[1]);
+                }
+            }
+        }
+
+        // Deduplicate
+        const uniqueSubs = [...new Set(subNames)]
+            .filter(s => !['all', 'popular', 'random', 'mod', 'friends'].includes(s.toLowerCase()));
+
+        console.log(`📋 Encontrados ${uniqueSubs.length} subreddits`);
+
+        if (uniqueSubs.length === 0) {
+            await page.close();
+            return { success: true, imported: 0, subs: [] };
+        }
+
+        // Save to database
+        const supabase = getSupabaseAdmin();
+        let imported = 0;
+
+        for (const subName of uniqueSubs) {
+            const { error } = await supabase
+                .from('subreddits')
+                .upsert(
+                    {
+                        model_id: modelId,
+                        name: subName,
+                        is_approved: true, // Auto-approve imported subs
+                        nsfw: true, // Assume NSFW for now
+                    },
+                    { onConflict: 'model_id,name' }
+                );
+
+            if (!error) imported++;
+        }
+
+        console.log(`✅ ${imported} subreddits importados`);
+        await page.close();
+
+        return { success: true, imported, subs: uniqueSubs.slice(0, 20) };
+
+    } catch (error: unknown) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.error('❌ Import subreddits error:', errMsg);
+        return { success: false, imported: 0, subs: [], error: errMsg };
+    } finally {
+        if (context) await context.close();
+    }
+}
+
 
 // =============================================
 // Reddit Posting
