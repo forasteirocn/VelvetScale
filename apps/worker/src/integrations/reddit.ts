@@ -508,9 +508,9 @@ export async function submitRedditImagePost(
             return { success: false, error: 'Session expired — need to login again' };
         }
 
-        // Switch to "Images & Video" tab
-        const imageTab = page.locator('button:has-text("Images"), button:has-text("Image"), button:has-text("Media")');
-        if (await imageTab.isVisible()) {
+        // Switch to "Images & Video" tab (may already be selected)
+        const imageTab = page.locator('button[role="tab"][data-select-value="IMAGE"]').first();
+        if (await imageTab.isVisible({ timeout: 3000 }).catch(() => false)) {
             await imageTab.click();
             await page.waitForTimeout(randomDelay(500, 1000));
         }
@@ -521,23 +521,23 @@ export async function submitRedditImagePost(
         await page.waitForTimeout(randomDelay(3000, 5000)); // Wait for upload
 
         // Fill title
-        const titleInput = page.locator('textarea[placeholder*="Title"], input[placeholder*="Title"], [data-test-id="post-title"] textarea');
+        const titleInput = page.locator('textarea[name="title"], textarea[placeholder*="Title"], textarea[placeholder*="Título"], input[placeholder*="Title"], [data-test-id="post-title"] textarea').first();
         await titleInput.fill(title);
         await page.waitForTimeout(randomDelay(500, 1000));
 
         // Mark NSFW
         if (isNsfw) {
-            const nsfwButton = page.locator('button:has-text("NSFW"), button:has-text("nsfw")');
-            if (await nsfwButton.isVisible()) {
+            const nsfwButton = page.locator('button:has-text("NSFW")').first();
+            if (await nsfwButton.isVisible({ timeout: 2000 }).catch(() => false)) {
                 await nsfwButton.click();
                 await page.waitForTimeout(randomDelay(300, 500));
             }
         }
 
         // Submit post
-        const submitButton = page.locator('button:has-text("Post"), button:has-text("Submit"), button[type="submit"]').last();
+        const submitButton = page.locator('button:has-text("Post"), button:has-text("Publicar"), button:has-text("Submit")').first();
         await submitButton.click();
-        await page.waitForTimeout(randomDelay(4000, 6000));
+        await page.waitForTimeout(randomDelay(5000, 8000));
 
         // Get the post URL
         const postUrl = page.url();
