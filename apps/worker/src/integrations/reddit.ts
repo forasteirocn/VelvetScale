@@ -518,7 +518,17 @@ export async function submitRedditImagePost(
         // Upload image via file input
         const fileInput = page.locator('input[type="file"]').first();
         await fileInput.setInputFiles(tempImagePath);
-        await page.waitForTimeout(randomDelay(3000, 5000)); // Wait for upload
+
+        // Wait for image to finish uploading (look for thumbnail or progress bar to disappear)
+        console.log('📤 Aguardando upload da imagem...');
+        await page.waitForTimeout(5000); // Minimum wait
+        // Wait up to 15 more seconds for upload to complete
+        for (let i = 0; i < 5; i++) {
+            const uploading = await page.locator('[class*="upload"], [class*="progress"], [class*="loading"]').isVisible({ timeout: 1000 }).catch(() => false);
+            if (!uploading) break;
+            await page.waitForTimeout(3000);
+            console.log('  ⏳ Upload em progresso...');
+        }
 
         // Fill title
         const titleInput = page.locator('textarea[name="title"], textarea[placeholder*="Title"], textarea[placeholder*="Título"], input[placeholder*="Title"], [data-test-id="post-title"] textarea').first();
@@ -534,9 +544,56 @@ export async function submitRedditImagePost(
             }
         }
 
-        // Submit post
-        const submitButton = page.locator('button:has-text("Post"), button:has-text("Publicar"), button:has-text("Submit")').first();
-        await submitButton.click();
+        // Debug screenshot before submit
+        const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
+        await page.screenshot({ path: debugPath });
+        console.log(`📸 Debug screenshot: ${debugPath}`);
+
+        // Submit post — try multiple approaches
+        let submitted = false;
+
+        // Approach 1: Click the submit button by text
+        const submitSelectors = [
+            'button[type="submit"]',
+            'button:has-text("Post")',
+            'button:has-text("Publicar")',
+            'button:has-text("Submit")',
+        ];
+
+        for (const sel of submitSelectors) {
+            try {
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    const isDisabled = await btn.isDisabled().catch(() => false);
+                    if (!isDisabled) {
+                        await btn.click({ timeout: 10000 });
+                        submitted = true;
+                        console.log(`  ✅ Submit via: ${sel}`);
+                        break;
+                    }
+                }
+            } catch { continue; }
+        }
+
+        // Approach 2: Force click via JS if normal click failed
+        if (!submitted) {
+            try {
+                await page.evaluate(() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const submit = buttons.find(b =>
+                        b.textContent?.includes('Post') ||
+                        b.textContent?.includes('Publicar') ||
+                        b.textContent?.includes('Submit')
+                    );
+                    if (submit) (submit as HTMLButtonElement).click();
+                });
+                submitted = true;
+                console.log('  ✅ Submit via JS evaluate');
+            } catch (e) {
+                console.error('  ❌ JS submit failed:', e);
+            }
+        }
+
         await page.waitForTimeout(randomDelay(5000, 8000));
 
         // Get the post URL
