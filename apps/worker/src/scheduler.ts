@@ -161,14 +161,18 @@ export async function schedulePhotos(
 
     // Notify model
     if (scheduled.length > 0) {
-        const estOffset = -5;
-        let msg = `📅 *${scheduled.length} post(s) agendado(s)!*\n\n`;
+        let msg = `${scheduled.length} post(s) agendado(s)!\n\n`;
         for (const s of scheduled) {
-            const estTime = new Date(s.time.getTime() + estOffset * 60 * 60 * 1000);
-            const timeStr = estTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            msg += `• ${timeStr} EST → r/${s.subreddit}\n  📌 "${s.title}"\n\n`;
+            const brTime = s.time.toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+                timeZone: 'America/Sao_Paulo',
+            });
+            const subName = s.subreddit.replace(/_/g, '\\_');
+            const safeTitle = (s.title || '').replace(/_/g, '\\_').replace(/[*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 80);
+            msg += `${brTime} BRT - r/${subName}\n"${safeTitle}"\n\n`;
         }
-        msg += '_O bot vai postar automaticamente nos horários acima._';
+        msg += 'O bot vai postar automaticamente nos horarios acima.';
         await sendTelegramMessage(chatId, msg);
     }
 }
