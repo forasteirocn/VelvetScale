@@ -77,7 +77,8 @@ async function saveSession(modelId: string, context: BrowserContext): Promise<vo
 export async function loginReddit(
     modelId: string,
     username: string,
-    password: string
+    password: string,
+    chatId?: number
 ): Promise<{ success: boolean; error?: string }> {
     let context: BrowserContext | null = null;
 
@@ -89,119 +90,67 @@ export async function loginReddit(
 
         // Navigate to Reddit login page
         await page.goto('https://www.reddit.com/login/', { waitUntil: 'commit', timeout: 60000 });
-        await page.waitForTimeout(randomDelay(2000, 3000));
+        await page.waitForTimeout(5000); // Wait for full page load
 
-        console.log('📄 Página carregada, preenchendo formulário...');
+        console.log('📄 Página carregada, procurando formulário...');
 
-        // Reddit has multiple possible login form layouts
-        // Try to find username field with various selectors
-        const usernameSelectors = [
-            '#login-username',
-            'input[name="username"]',
-            'input[id="loginUsername"]',
-            'faceplate-text-input[name="username"] input',
-            'input[autocomplete="username"]',
-        ];
+        // Try to find AND fill the login form
+        // Reddit has multiple layouts - try each approach
+        const filled = await tryFillLoginForm(page, username, password);
 
-        let usernameField = null;
-        for (const sel of usernameSelectors) {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-                usernameField = el;
-                console.log(`  ✅ Username field: ${sel}`);
-                break;
+        if (filled) {
+            console.log('🔐 Formulário preenchido, fazendo login...');
+
+            // Try clicking submit or pressing Enter
+            const submitClicked = await trySubmitForm(page);
+            if (!submitClicked) {
+                await page.keyboard.press('Enter');
+            }
+
+            await page.waitForTimeout(randomDelay(5000, 7000));
+        } else {
+            // CAPTCHA or unknown page layout
+            console.log('⚠️ Formulário não encontrado — possível CAPTCHA');
+            console.log('👀 Resolva o CAPTCHA e faça login manualmente no Chrome!');
+
+            // Notify via Telegram if we have chatId
+            if (chatId) {
+                const { sendTelegramMessage } = await import('./telegram');
+                await sendTelegramMessage(chatId,
+                    '⚠️ O Reddit pediu CAPTCHA!\n\n' +
+                    '👀 Vá até o Mac dedicado e resolva o CAPTCHA na tela do Chrome.\n' +
+                    'Depois faça login manualmente.\n\n' +
+                    'O bot vai detectar quando você logar (até 2 min).'
+                );
+            }
+
+            // Wait up to 2 minutes for user to solve CAPTCHA and login manually
+            const loggedIn = await waitForManualLogin(page, 120000);
+
+            if (!loggedIn) {
+                const screenshotPath = path.join(COOKIES_DIR, `debug_captcha_${Date.now()}.png`);
+                await page.screenshot({ path: screenshotPath });
+                console.log(`📸 Screenshot: ${screenshotPath}`);
+                await page.close();
+                return { success: false, error: 'Timeout esperando login manual (2 min)' };
             }
         }
-
-        if (!usernameField) {
-            // Take screenshot for debugging
-            const screenshotPath = path.join(COOKIES_DIR, `debug_login_${Date.now()}.png`);
-            await page.screenshot({ path: screenshotPath });
-            console.log(`📸 Screenshot salvo: ${screenshotPath}`);
-            await page.close();
-            return { success: false, error: 'Could not find username field on login page' };
-        }
-
-        await usernameField.click();
-        await usernameField.fill(username);
-        await page.waitForTimeout(randomDelay(500, 800));
-
-        // Find password field
-        const passwordSelectors = [
-            '#login-password',
-            'input[name="password"]',
-            'input[id="loginPassword"]',
-            'faceplate-text-input[name="password"] input',
-            'input[type="password"]',
-        ];
-
-        let passwordField = null;
-        for (const sel of passwordSelectors) {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-                passwordField = el;
-                console.log(`  ✅ Password field: ${sel}`);
-                break;
-            }
-        }
-
-        if (!passwordField) {
-            await page.close();
-            return { success: false, error: 'Could not find password field' };
-        }
-
-        await passwordField.click();
-        await passwordField.fill(password);
-        await page.waitForTimeout(randomDelay(500, 800));
-
-        console.log('🔐 Clicando login...');
-
-        // Find and click submit button
-        const submitSelectors = [
-            'button[type="submit"]',
-            'button.login',
-            'button:has-text("Log In")',
-            'button:has-text("Sign In")',
-            'button:has-text("Entrar")',
-            'faceplate-tracker button',
-        ];
-
-        let submitted = false;
-        for (const sel of submitSelectors) {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await el.click();
-                submitted = true;
-                console.log(`  ✅ Submit button: ${sel}`);
-                break;
-            }
-        }
-
-        // If no button found, try pressing Enter on the password field
-        if (!submitted) {
-            console.log('  ⚠️ No submit button, pressing Enter...');
-            await passwordField!.press('Enter');
-        }
-
-        // Wait for navigation/login to complete
-        await page.waitForTimeout(randomDelay(5000, 7000));
 
         // Check if login was successful
         const currentUrl = page.url();
-        console.log(`📍 URL após login: ${currentUrl}`);
+        console.log(`📍 URL: ${currentUrl}`);
 
         if (currentUrl.includes('login') || currentUrl.includes('register')) {
-            const screenshotPath = path.join(COOKIES_DIR, `debug_login_fail_${Date.now()}.png`);
+            const screenshotPath = path.join(COOKIES_DIR, `debug_fail_${Date.now()}.png`);
             await page.screenshot({ path: screenshotPath });
-            console.log(`📸 Screenshot: ${screenshotPath}`);
             await page.close();
-            return { success: false, error: 'Login failed — check credentials or CAPTCHA' };
+            return { success: false, error: 'Login falhou — credenciais incorretas ou CAPTCHA' };
         }
 
-        // Save session
+        // Save session cookies
         await saveSession(modelId, context);
 
-        // Update DB with Reddit username
+        // Update DB
         const supabase = getSupabaseAdmin();
         await supabase.from('social_accounts').upsert(
             {
@@ -225,6 +174,97 @@ export async function loginReddit(
         if (context) await context.close();
     }
 }
+
+/**
+ * Try to fill the login form with various selectors
+ */
+async function tryFillLoginForm(page: Page, username: string, password: string): Promise<boolean> {
+    const usernameSelectors = [
+        '#login-username',
+        'input[name="username"]',
+        'input[id="loginUsername"]',
+        'input[autocomplete="username"]',
+        'input[type="text"]',
+    ];
+
+    const passwordSelectors = [
+        '#login-password',
+        'input[name="password"]',
+        'input[id="loginPassword"]',
+        'input[type="password"]',
+    ];
+
+    // Find username field
+    for (const sel of usernameSelectors) {
+        try {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+                await el.click();
+                await el.fill(username);
+                console.log(`  ✅ Username: ${sel}`);
+
+                await page.waitForTimeout(randomDelay(300, 600));
+
+                // Find password field
+                for (const pSel of passwordSelectors) {
+                    try {
+                        const pEl = page.locator(pSel).first();
+                        if (await pEl.isVisible({ timeout: 1500 }).catch(() => false)) {
+                            await pEl.click();
+                            await pEl.fill(password);
+                            console.log(`  ✅ Password: ${pSel}`);
+                            return true;
+                        }
+                    } catch { continue; }
+                }
+            }
+        } catch { continue; }
+    }
+
+    return false;
+}
+
+/**
+ * Try to click a submit button
+ */
+async function trySubmitForm(page: Page): Promise<boolean> {
+    const selectors = [
+        'button[type="submit"]',
+        'button:has-text("Log In")',
+        'button:has-text("Sign In")',
+        'button:has-text("Entrar")',
+    ];
+
+    for (const sel of selectors) {
+        try {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+                await el.click();
+                console.log(`  ✅ Submit: ${sel}`);
+                return true;
+            }
+        } catch { continue; }
+    }
+    return false;
+}
+
+/**
+ * Wait for the user to manually login (solve CAPTCHA on screen)
+ * Polls the URL every 3 seconds to check if we left the login page
+ */
+async function waitForManualLogin(page: Page, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        await page.waitForTimeout(3000);
+        const url = page.url();
+        if (!url.includes('login') && !url.includes('register') && !url.includes('captcha')) {
+            console.log('✅ Login manual detectado!');
+            return true;
+        }
+    }
+    return false;
+}
+
 
 // =============================================
 // Reddit Posting

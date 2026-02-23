@@ -157,7 +157,7 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
 
             // Do the login via Playwright
             const { loginReddit } = await import('./reddit');
-            const result = await loginReddit(model.id, username, password);
+            const result = await loginReddit(model.id, username, password, chatId);
 
             if (result.success) {
                 await sendTelegramMessage(
