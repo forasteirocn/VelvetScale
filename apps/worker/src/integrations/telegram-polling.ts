@@ -162,11 +162,13 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             if (result.success) {
                 await sendTelegramMessage(
                     chatId,
-                    `✅ *Reddit conectado!*\n\nUsuário: @${username}\nSessão salva. Agora você pode postar!`
+                    `✅ *Reddit conectado!*\n\nUsuário: ${username}\nSessão salva. Agora você pode postar!`
                 );
                 console.log(`✅ Reddit login OK: @${username}`);
             } else {
-                await sendTelegramMessage(chatId, `❌ Erro no login: ${result.error}`);
+                // Sanitize error for Telegram (special chars break markdown)
+                const safeError = (result.error || 'Unknown error').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
+                await sendTelegramMessage(chatId, `❌ Erro no login: ${safeError}`);
                 console.log(`❌ Reddit login falhou: ${result.error}`);
             }
 

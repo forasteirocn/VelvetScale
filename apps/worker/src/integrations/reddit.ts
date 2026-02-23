@@ -88,7 +88,7 @@ export async function loginReddit(
         console.log('🌐 Abrindo Reddit login...');
 
         // Navigate to Reddit login page
-        await page.goto('https://www.reddit.com/login/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto('https://www.reddit.com/login/', { waitUntil: 'commit', timeout: 60000 });
         await page.waitForTimeout(randomDelay(2000, 3000));
 
         console.log('📄 Página carregada, preenchendo formulário...');
