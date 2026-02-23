@@ -86,22 +86,41 @@ async function pollLoop(): Promise<void> {
  */
 async function handleUpdate(update: TelegramUpdate): Promise<void> {
     try {
-        // === Handle /start command ===
-        if (update.message?.text === '/start') {
+        // === Handle /start or /ajuda command ===
+        if (update.message?.text === '/start' || update.message?.text === '/ajuda') {
             const chatId = update.message.chat.id;
-            console.log(`👋 /start de chat ${chatId}`);
+            console.log(`👋 ${update.message.text} de chat ${chatId}`);
             await sendTelegramMessage(
                 chatId,
-                `🟣 *Bem-vinda ao VelvetScale!*\n\n` +
-                `Seu agente de IA para redes sociais.\n\n` +
-                `📝 *Comandos disponíveis:*\n` +
-                `• "Poste no Reddit sobre [tema]"\n` +
-                `• "Encontrar subreddits"\n` +
-                `• "Ver engajamento"\n` +
-                `• "Estatísticas"\n\n` +
-                `🔐 *Conectar Reddit:*\n` +
-                `• /login reddit usuario senha\n\n` +
-                `📸 Ou envie uma *foto + legenda* para postar!\n\n` +
+                `🟣 *VelvetScale — Seu Agente de Redes Sociais*\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `🔐 *CONECTAR CONTA*\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `/login reddit usuario senha\n` +
+                `↳ Conecta sua conta Reddit e importa seus subreddits automaticamente\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `📸 *POSTAR CONTEÚDO*\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `📷 *Envie uma foto com legenda*\n` +
+                `↳ A IA melhora sua legenda e agenda o post no melhor horário de pico (8h-22h EST)\n\n` +
+                `"Poste no Reddit sobre [tema]"\n` +
+                `↳ Gera um post de texto com IA e publica no melhor subreddit\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `📋 *GERENCIAR*\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `/fila\n` +
+                `↳ Ver posts agendados na fila\n\n` +
+                `"Encontrar subreddits"\n` +
+                `↳ A IA analisa seu perfil e sugere os melhores subreddits\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `📊 *MÉTRICAS*\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `"Estatísticas"\n` +
+                `↳ Ver total de posts e comandos processados\n\n` +
+                `"Ver engajamento"\n` +
+                `↳ Upvotes e comentários dos últimos 5 posts\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `/ajuda — Ver esta mensagem novamente\n\n` +
                 `_Seu Telegram ID: ${chatId}_`
             );
             return;
