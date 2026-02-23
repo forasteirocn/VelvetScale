@@ -90,38 +90,60 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
         if (update.message?.text === '/start' || update.message?.text === '/ajuda') {
             const chatId = update.message.chat.id;
             console.log(`👋 ${update.message.text} de chat ${chatId}`);
+
+            // Send in 2 messages to avoid being too long
             await sendTelegramMessage(
                 chatId,
-                `🟣 *VelvetScale — Seu Agente de Redes Sociais*\n\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `🔐 *CONECTAR CONTA*\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `🟣 *VelvetScale — Como usar*\n\n` +
+
+                `*PASSO 1 — Conectar o Reddit*\n` +
+                `Digite exatamente:\n` +
+                `/login reddit seuusuario suasenha\n\n` +
+                `Exemplo:\n` +
+                `/login reddit samyof 123456\n\n` +
+                `O que acontece: o bot abre o Chrome, faz login, importa seus subreddits e te avisa quando estiver pronto.\n\n` +
+
+                `*PASSO 2 — Postar uma foto*\n` +
+                `Abra sua galeria, escolha uma foto e envie aqui com uma legenda.\n\n` +
+                `Exemplo: envie uma selfie e escreva na legenda:\n` +
+                `"bom dia gatinhos"\n\n` +
+                `O que acontece: a IA melhora sua legenda em inglês, escolhe o melhor subreddit e agenda o post pro próximo horário de pico dos EUA.\n\n` +
+
+                `*PASSO 3 — Acompanhar*\n` +
+                `Para ver seus posts agendados, digite:\n` +
+                `/fila`
+            );
+
+            await sendTelegramMessage(
+                chatId,
+                `*TODOS OS COMANDOS:*\n\n` +
+
                 `/login reddit usuario senha\n` +
-                `↳ Conecta sua conta Reddit e importa seus subreddits automaticamente\n\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `📸 *POSTAR CONTEÚDO*\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `📷 *Envie uma foto com legenda*\n` +
-                `↳ A IA melhora sua legenda e agenda o post no melhor horário de pico (8h-22h EST)\n\n` +
-                `"Poste no Reddit sobre [tema]"\n` +
-                `↳ Gera um post de texto com IA e publica no melhor subreddit\n\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `📋 *GERENCIAR*\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `→ Conecta o Reddit (só precisa 1 vez)\n\n` +
+
+                `📷 Foto + legenda\n` +
+                `→ Agenda post automático no Reddit\n\n` +
+
                 `/fila\n` +
-                `↳ Ver posts agendados na fila\n\n` +
-                `"Encontrar subreddits"\n` +
-                `↳ A IA analisa seu perfil e sugere os melhores subreddits\n\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `📊 *MÉTRICAS*\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `"Estatísticas"\n` +
-                `↳ Ver total de posts e comandos processados\n\n` +
-                `"Ver engajamento"\n` +
-                `↳ Upvotes e comentários dos últimos 5 posts\n\n` +
-                `━━━━━━━━━━━━━━━━━━━━\n` +
-                `/ajuda — Ver esta mensagem novamente\n\n` +
-                `_Seu Telegram ID: ${chatId}_`
+                `→ Mostra posts na fila de espera\n\n` +
+
+                `Estatísticas\n` +
+                `→ Mostra quantos posts foram feitos\n\n` +
+
+                `Ver engajamento\n` +
+                `→ Mostra upvotes e comentários\n\n` +
+
+                `Encontrar subreddits\n` +
+                `→ A IA sugere os melhores subs pro seu perfil\n\n` +
+
+                `Poste no Reddit sobre [tema]\n` +
+                `→ Cria e publica um post de texto\n` +
+                `Ex: "Poste no Reddit sobre fitness"\n\n` +
+
+                `/ajuda\n` +
+                `→ Mostra essa mensagem de novo\n\n` +
+
+                `_ID: ${chatId}_`
             );
             return;
         }
