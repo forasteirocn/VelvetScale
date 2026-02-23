@@ -24,11 +24,11 @@ let browser: Browser | null = null;
 async function getBrowser(): Promise<Browser> {
     if (!browser || !browser.isConnected()) {
         browser = await chromium.launch({
-            headless: true, // Set to false for debugging
+            headless: false, // Visible browser — so model can see what's happening
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Important for low-RAM machines
+                '--disable-dev-shm-usage',
             ],
         });
     }
@@ -44,7 +44,7 @@ async function getModelContext(modelId: string): Promise<BrowserContext> {
     const cookiePath = path.join(COOKIES_DIR, `${modelId}.json`);
 
     const context = await br.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
         viewport: { width: 1280, height: 800 },
     });
 
@@ -85,25 +85,117 @@ export async function loginReddit(
         context = await getModelContext(modelId);
         const page = await context.newPage();
 
-        // Navigate to Reddit login
-        await page.goto('https://www.reddit.com/login', { waitUntil: 'networkidle' });
-        await page.waitForTimeout(randomDelay(1000, 2000));
+        console.log('🌐 Abrindo Reddit login...');
 
-        // Fill login form
-        await page.fill('input[name="username"]', username);
-        await page.waitForTimeout(randomDelay(300, 600));
-        await page.fill('input[name="password"]', password);
-        await page.waitForTimeout(randomDelay(300, 600));
+        // Navigate to Reddit login page
+        await page.goto('https://www.reddit.com/login/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(randomDelay(2000, 3000));
 
-        // Click login button
-        await page.click('button[type="submit"]');
-        await page.waitForTimeout(randomDelay(3000, 5000));
+        console.log('📄 Página carregada, preenchendo formulário...');
+
+        // Reddit has multiple possible login form layouts
+        // Try to find username field with various selectors
+        const usernameSelectors = [
+            '#login-username',
+            'input[name="username"]',
+            'input[id="loginUsername"]',
+            'faceplate-text-input[name="username"] input',
+            'input[autocomplete="username"]',
+        ];
+
+        let usernameField = null;
+        for (const sel of usernameSelectors) {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+                usernameField = el;
+                console.log(`  ✅ Username field: ${sel}`);
+                break;
+            }
+        }
+
+        if (!usernameField) {
+            // Take screenshot for debugging
+            const screenshotPath = path.join(COOKIES_DIR, `debug_login_${Date.now()}.png`);
+            await page.screenshot({ path: screenshotPath });
+            console.log(`📸 Screenshot salvo: ${screenshotPath}`);
+            await page.close();
+            return { success: false, error: 'Could not find username field on login page' };
+        }
+
+        await usernameField.click();
+        await usernameField.fill(username);
+        await page.waitForTimeout(randomDelay(500, 800));
+
+        // Find password field
+        const passwordSelectors = [
+            '#login-password',
+            'input[name="password"]',
+            'input[id="loginPassword"]',
+            'faceplate-text-input[name="password"] input',
+            'input[type="password"]',
+        ];
+
+        let passwordField = null;
+        for (const sel of passwordSelectors) {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+                passwordField = el;
+                console.log(`  ✅ Password field: ${sel}`);
+                break;
+            }
+        }
+
+        if (!passwordField) {
+            await page.close();
+            return { success: false, error: 'Could not find password field' };
+        }
+
+        await passwordField.click();
+        await passwordField.fill(password);
+        await page.waitForTimeout(randomDelay(500, 800));
+
+        console.log('🔐 Clicando login...');
+
+        // Find and click submit button
+        const submitSelectors = [
+            'button[type="submit"]',
+            'button.login',
+            'button:has-text("Log In")',
+            'button:has-text("Sign In")',
+            'button:has-text("Entrar")',
+            'faceplate-tracker button',
+        ];
+
+        let submitted = false;
+        for (const sel of submitSelectors) {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await el.click();
+                submitted = true;
+                console.log(`  ✅ Submit button: ${sel}`);
+                break;
+            }
+        }
+
+        // If no button found, try pressing Enter on the password field
+        if (!submitted) {
+            console.log('  ⚠️ No submit button, pressing Enter...');
+            await passwordField!.press('Enter');
+        }
+
+        // Wait for navigation/login to complete
+        await page.waitForTimeout(randomDelay(5000, 7000));
 
         // Check if login was successful
         const currentUrl = page.url();
-        if (currentUrl.includes('login')) {
+        console.log(`📍 URL após login: ${currentUrl}`);
+
+        if (currentUrl.includes('login') || currentUrl.includes('register')) {
+            const screenshotPath = path.join(COOKIES_DIR, `debug_login_fail_${Date.now()}.png`);
+            await page.screenshot({ path: screenshotPath });
+            console.log(`📸 Screenshot: ${screenshotPath}`);
             await page.close();
-            return { success: false, error: 'Login failed — check credentials' };
+            return { success: false, error: 'Login failed — check credentials or CAPTCHA' };
         }
 
         // Save session
@@ -121,6 +213,7 @@ export async function loginReddit(
             { onConflict: 'model_id,platform' }
         );
 
+        console.log('✅ Login Reddit salvo!');
         await page.close();
         return { success: true };
 
