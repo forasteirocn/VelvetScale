@@ -294,6 +294,67 @@ Suggest 5-10 subreddits, ordered by potential impact.`,
 }
 
 // =============================================
+// Smart Sub Picker
+// Picks the best subreddit for a specific caption
+// =============================================
+
+/**
+ * Use Claude to pick the best subreddit for a given caption
+ * Returns the name of the most relevant subreddit
+ */
+export async function pickBestSubForCaption(
+    caption: string,
+    availableSubs: string[]
+): Promise<string> {
+    // If only 1 sub, just return it
+    if (availableSubs.length <= 1) return availableSubs[0] || '';
+
+    // Pick top 30 random subs to send to Claude (avoid huge prompt)
+    const shuffled = [...availableSubs].sort(() => Math.random() - 0.5);
+    const candidates = shuffled.slice(0, 30);
+
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 100,
+            system: `You pick the single best subreddit for a photo post. 
+Consider: the caption vibe, the subreddit's theme, and where the post would get the most engagement.
+Respond with ONLY the subreddit name, nothing else. No "r/", no explanation.`,
+            messages: [
+                {
+                    role: 'user',
+                    content: `Caption: "${caption}"
+
+Available subreddits:
+${candidates.map(s => `- ${s}`).join('\n')}
+
+Which ONE subreddit is the best match?`,
+                },
+            ],
+        });
+
+        const chosen = response.content[0].type === 'text'
+            ? response.content[0].text.trim().replace(/^r\//, '').replace(/[^a-zA-Z0-9_]/g, '')
+            : '';
+
+        // Verify the chosen sub exists in our list
+        const match = availableSubs.find(
+            s => s.toLowerCase() === chosen.toLowerCase()
+        );
+
+        if (match) {
+            console.log(`🎯 Claude escolheu: r/${match} para "${caption}"`);
+            return match;
+        }
+    } catch (err) {
+        console.error('⚠️ pickBestSub error, using random:', err);
+    }
+
+    // Fallback: random
+    return shuffled[0];
+}
+
+// =============================================
 // Comment Analyzer
 // Generates natural replies to comments
 // =============================================

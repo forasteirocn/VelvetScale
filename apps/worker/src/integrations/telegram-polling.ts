@@ -369,24 +369,28 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
 
     if (isImmediate) {
         // === IMMEDIATE POST ===
-        // Get all approved subreddits and pick a random one
+        // Get all approved subreddits
         const { data: subs } = await supabase
             .from('subreddits')
-            .select('*')
+            .select('name')
             .eq('model_id', model.id)
             .eq('is_approved', true);
 
-        const randomIndex = Math.floor(Math.random() * (subs?.length || 0));
-        const targetSub = subs?.[randomIndex]?.name;
-        if (!targetSub) {
+        const subNames = subs?.map(s => s.name) || [];
+        if (subNames.length === 0) {
             await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
             return;
         }
 
+        await sendTelegramMessage(chatId, 'Analisando melhor sub para sua foto...');
+
+        // Ask Claude to pick the best sub for this caption
+        const { pickBestSubForCaption, improveCaption } = await import('./claude');
+        const targetSub = await pickBestSubForCaption(caption, subNames);
+
         await sendTelegramMessage(chatId, `Postando agora em r/${targetSub.replace(/_/g, '\\_')}...`);
 
         // Improve caption with Claude
-        const { improveCaption } = await import('./claude');
         const improved = await improveCaption(
             caption,
             targetSub,
