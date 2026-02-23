@@ -369,16 +369,15 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
 
     if (isImmediate) {
         // === IMMEDIATE POST ===
-        // Get best subreddit
+        // Get all approved subreddits and pick a random one
         const { data: subs } = await supabase
             .from('subreddits')
             .select('*')
             .eq('model_id', model.id)
-            .eq('is_approved', true)
-            .order('last_posted_at', { ascending: true, nullsFirst: true })
-            .limit(1);
+            .eq('is_approved', true);
 
-        const targetSub = subs?.[0]?.name;
+        const randomIndex = Math.floor(Math.random() * (subs?.length || 0));
+        const targetSub = subs?.[randomIndex]?.name;
         if (!targetSub) {
             await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
             return;
