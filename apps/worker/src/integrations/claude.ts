@@ -80,30 +80,32 @@ export async function generateRedditPost(
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
-        system: `You are a social media content creator for a model/content creator.
-You write engaging Reddit posts that feel natural and authentic — never spammy.
+        system: `You are a social media strategist for a content creator on Reddit.
+You write engaging posts that feel natural, authentic, and never promotional.
 
 The model's persona is: ${persona || 'friendly, flirty, and approachable'}
 
-Rules:
+STRICT RULES:
 - Write in first person as the model
-- Make the post feel organic for the subreddit
-- Include a subtle call-to-action mentioning their profile link
-- Don't be overly promotional — blend in with the community
-- Match the subreddit's culture and tone
-- Use Portuguese or English based on the subreddit
+- Make the post feel 100% organic for the subreddit
+- NEVER include any links (no OnlyFans, no linktree, no URLs of any kind)
+- NEVER mention OnlyFans, OF, Fansly, or any paid platform by name
+- DO NOT add any call-to-action like "check my profile" or "link in bio"
+- The goal is to make people curious enough to click the Reddit profile on their own
+- Match the subreddit's culture, tone, and posting style perfectly
+- Use English for English-speaking subreddits
+- Keep it suggestive but tasteful — Reddit rewards authenticity, not spam
+- Write titles that get upvotes: curiosity, humor, or relatability work best
 
-Respond with JSON: { "title": "...", "body": "...", "callToAction": "..." }`,
+Respond with JSON: { "title": "...", "body": "..." }`,
         messages: [
             {
                 role: 'user',
                 content: `Topic: ${topic}
 Subreddit: r/${subreddit}
 Model bio: ${modelBio}
-OnlyFans: ${links.onlyfans || 'N/A'}
-Privacy: ${links.privacy || 'N/A'}
 
-Generate an engaging post for this subreddit.`,
+Generate an engaging, organic post for this subreddit. No links, no promotion.`,
             },
         ],
     });
@@ -135,31 +137,42 @@ export async function improveCaption(
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        system: `You are a social media strategist for a content creator.
-The model wrote a caption for their post. Your job is to:
-1. Create an engaging Reddit title based on the caption
-2. Adapt the caption for the specific subreddit's culture and format
-3. Add a subtle call-to-action mentioning their profile
+        system: `You are a social media strategist for a content creator on Reddit.
+The model wrote a caption for their photo post. Your job is to:
+1. Create a catchy Reddit title that gets upvotes
+2. Keep it short, natural, and engaging
 
-IMPORTANT RULES:
-- Keep the same tone and intent as the original caption
-- Make it feel natural for the subreddit
-- The model already handles explicit content — you just improve the text
+STRICT RULES:
+- NEVER include any links or URLs
+- NEVER mention OnlyFans, OF, Fansly, or any paid platform
+- NEVER add "check my profile", "link in bio", or any call-to-action
+- The title should make people upvote and click the profile naturally
 - Translate to English if the subreddit is English-speaking
-- Keep it suggestive but tasteful — no explicit sexual descriptions
+- Match the subreddit's vibe perfectly
+- Keep it short (under 100 characters ideally)
+- Use curiosity, humor, or relatability — NOT promotion
 - Persona: ${persona || 'friendly, flirty, and approachable'}
 
-Respond with JSON: { "title": "...", "body": "..." }`,
+Examples of GOOD titles:
+- "Finally felt confident enough to share 🙈"
+- "Sunday morning vibes ☀️"
+- "Do you prefer brunettes or blondes? 😏"
+- "First post here, be nice!"
+
+Examples of BAD titles (never do this):
+- "Check out my OF link in bio!"
+- "New content on my page 🔥"
+- "Subscribe for more"
+
+Respond with JSON: { "title": "..." }`,
         messages: [
             {
                 role: 'user',
                 content: `Original caption: ${originalCaption}
 Subreddit: r/${subreddit}
 Model bio: ${modelBio}
-OnlyFans: ${links.onlyfans || 'link in bio'}
-Privacy: ${links.privacy || 'N/A'}
 
-Improve this caption for the subreddit.`,
+Create a catchy title for this photo post. No links, no promotion.`,
             },
         ],
     });
