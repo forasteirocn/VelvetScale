@@ -1,0 +1,24 @@
+{
+  "name": "velvetscale",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "dev:web": "turbo dev --filter=@velvetscale/web",
+    "dev:worker": "turbo dev --filter=@velvetscale/worker",
+    "db:migrate": "turbo db:migrate --filter=@velvetscale/db"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@10.8.2"
+}
