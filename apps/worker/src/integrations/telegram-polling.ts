@@ -210,11 +210,11 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 // Auto-import subreddits
                 const importResult = await importSubreddits(model.id);
                 if (importResult.imported > 0) {
-                    const subList = importResult.subs.slice(0, 10).map(s => `• r/${s}`).join('\n');
+                    const subList = importResult.subs.slice(0, 10).map(s => `- r/${s.replace(/_/g, '\\_')}`).join('\n');
                     const extra = importResult.subs.length > 10 ? `\n...e mais ${importResult.subs.length - 10}` : '';
                     await sendTelegramMessage(
                         chatId,
-                        `📋 *${importResult.imported} subreddits importados!*\n\n${subList}${extra}\n\n📸 Agora envie uma foto pra agendar um post!`
+                        `${importResult.imported} subreddits importados!\n\n${subList}${extra}\n\nEnvie uma foto pra agendar um post!`
                     );
                 } else {
                     await sendTelegramMessage(
