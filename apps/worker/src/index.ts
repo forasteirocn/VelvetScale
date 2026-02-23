@@ -6,6 +6,7 @@ import { apiRouter } from './routes/api';
 import { initQueues } from './queues';
 import { closeBrowser } from './integrations/reddit';
 import { startPolling, stopPolling } from './integrations/telegram-polling';
+import { startScheduler, stopScheduler } from './scheduler';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -33,6 +34,9 @@ async function main() {
         // Start Telegram long polling (no webhook needed!)
         await startPolling();
 
+        // Start post scheduler (checks every 5 min)
+        startScheduler();
+
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);
             console.log(`🔗 API: http://localhost:${PORT}/api`);
@@ -48,12 +52,14 @@ async function main() {
 process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down...');
     stopPolling();
+    stopScheduler();
     await closeBrowser();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     stopPolling();
+    stopScheduler();
     await closeBrowser();
     process.exit(0);
 });

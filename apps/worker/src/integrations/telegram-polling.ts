@@ -182,6 +182,15 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             return;
         }
 
+        // === Handle /fila command ===
+        if (update.message?.text === '/fila') {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            console.log(`📋 /fila de chat ${chatId}`);
+            await handleFilaCommand(chatId, telegramId);
+            return;
+        }
+
         // === Handle text commands ===
         if (update.message?.text) {
             await handleTextMessage(update);
@@ -255,7 +264,7 @@ async function handleTextMessage(update: TelegramUpdate): Promise<void> {
 }
 
 /**
- * Handle a photo message (model sends photo + caption to post)
+ * Handle a photo message — schedules for optimal posting
  */
 async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const msg = update.message!;
@@ -295,64 +304,64 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
         return;
     }
 
-    // Get best subreddit
-    const { data: subs } = await supabase
-        .from('subreddits')
-        .select('*')
-        .eq('model_id', model.id)
-        .eq('is_approved', true)
-        .order('last_posted_at', { ascending: true, nullsFirst: true })
-        .limit(1);
+    await sendTelegramMessage(chatId, '⏳ Agendando post... Melhorando legenda com IA.');
 
-    const targetSub = subs?.[0]?.name;
-    if (!targetSub) {
-        await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado. Use "encontrar subreddits" primeiro.');
-        return;
-    }
-
-    await sendTelegramMessage(chatId, `⏳ Processando... Melhorando legenda e postando em r/${targetSub}`);
-
-    // Improve caption with Claude
-    const { improveCaption } = await import('./claude');
-    const improved = await improveCaption(
-        caption || 'New post 🔥',
-        targetSub,
-        model.bio || '',
-        model.persona || '',
-        { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
-    );
-
-    // Post to Reddit with image via Playwright
-    const { submitRedditImagePost } = await import('./reddit');
-    const result = await submitRedditImagePost(
+    // Schedule via scheduler
+    const { schedulePhotos } = await import('../scheduler');
+    await schedulePhotos(
         model.id,
-        targetSub,
-        improved.title,
-        photoUrl,
-        true
+        [{ url: photoUrl, caption: caption || '🔥' }],
+        chatId
     );
-
-    if (result.success) {
-        await sendTelegramMessage(
-            chatId,
-            `✅ *Postei em r/${targetSub}!*\n\n📌 ${improved.title}\n🔗 ${result.url}`
-        );
-
-        await supabase
-            .from('subreddits')
-            .update({ last_posted_at: new Date().toISOString() })
-            .eq('model_id', model.id)
-            .eq('name', targetSub);
-    } else {
-        await sendTelegramMessage(chatId, `❌ Erro ao postar: ${result.error}`);
-    }
 
     // Log
     await supabase.from('agent_logs').insert({
         model_id: model.id,
-        action: 'photo_post',
-        details: { subreddit: targetSub, caption: improved.title, success: result.success },
+        action: 'photo_scheduled',
+        details: { caption },
     });
+}
+
+/**
+ * Handle the /fila command — show queued posts
+ */
+async function handleFilaCommand(chatId: number, telegramId: string): Promise<void> {
+    const supabase = getSupabaseAdmin();
+
+    const { data: model } = await supabase
+        .from('models')
+        .select('id')
+        .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+        .single();
+
+    if (!model) {
+        await sendTelegramMessage(chatId, '⚠️ Conta não encontrada.');
+        return;
+    }
+
+    const { data: queue } = await supabase
+        .from('scheduled_posts')
+        .select('*')
+        .eq('model_id', model.id)
+        .in('status', ['queued', 'ready', 'improving'])
+        .order('scheduled_for', { ascending: true })
+        .limit(10);
+
+    if (!queue?.length) {
+        await sendTelegramMessage(chatId, '📭 Nenhum post na fila. Envie fotos para agendar!');
+        return;
+    }
+
+    let msg = `📋 *Posts na fila (${queue.length}):*\n\n`;
+    for (const post of queue) {
+        const time = post.scheduled_for
+            ? new Date(post.scheduled_for).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })
+            : 'pendente';
+        msg += `• ${time} EST → r/${post.target_subreddit || '?'}\n`;
+        msg += `  📌 "${post.improved_title || post.original_caption || '...'}"\n\n`;
+    }
+
+    await sendTelegramMessage(chatId, msg);
 }
 
 function sleep(ms: number): Promise<void> {
