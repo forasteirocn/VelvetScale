@@ -884,6 +884,38 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
 
     // Upload image via file input
     console.log('📤 Uploading imagem...');
+
+    // In Shreddit, the file input is often hidden or inactive until the dropzone is interacted with
+    try {
+        // Try to click the upload area first to initialize the file input
+        const dropzoneSelectors = [
+            'div[data-testid="image-upload-area"]',
+            'div:has-text("Drag and drop")',
+            'div:has-text("Arrasta e larga")',
+            'button[aria-label="Upload"]',
+            'shreddit-gallery-input button',
+        ];
+        for (const dzSel of dropzoneSelectors) {
+            const dz = page.locator(dzSel).first();
+            if (await dz.isVisible({ timeout: 1000 }).catch(() => false)) {
+                await dz.click({ force: true });
+                await page.waitForTimeout(500);
+                break;
+            }
+        }
+    } catch { /* ignore */ }
+
+    // Force the file input to be visible and attach file
+    await page.evaluate(() => {
+        document.querySelectorAll('input[type="file"]').forEach(el => {
+            (el as HTMLElement).style.display = 'block';
+            (el as HTMLElement).style.opacity = '1';
+            (el as HTMLElement).style.visibility = 'visible';
+            (el as HTMLElement).style.position = 'static';
+        });
+    });
+
+    await page.waitForTimeout(500);
     const fileInput = page.locator('input[type="file"]').first();
     await fileInput.setInputFiles(tempImagePath);
 
