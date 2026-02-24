@@ -596,41 +596,170 @@ async function tryNewRedditSubmit(
     const pageText = await page.textContent('body').catch(() => '') || '';
     const pageTextLower = pageText.toLowerCase();
 
-    const blockingPatterns = [
-        { pattern: 'comunidade é privada', error: 'private_community' },
-        { pattern: 'community is private', error: 'private_community' },
-        { pattern: 'this community is private', error: 'private_community' },
-        { pattern: 'apenas os membros aprovados', error: 'private_community' },
-        { pattern: 'only approved members', error: 'private_community' },
-        { pattern: 'comunidade é restrita', error: 'restricted_community' },
-        { pattern: 'community is restricted', error: 'restricted_community' },
+    // === HARD BLOCKS (auto-ban, no recovery) ===
+    const hardBlockPatterns = [
         { pattern: 'you are banned', error: 'banned_from_sub' },
         { pattern: 'you have been banned', error: 'banned_from_sub' },
         { pattern: 'you aren\'t allowed to post', error: 'not_allowed' },
         { pattern: 'you aren\'t eligible to post', error: 'not_allowed' },
-        { pattern: 'pedir para aderir', error: 'private_community' },
-        { pattern: 'request to join', error: 'private_community' },
     ];
 
-    for (const { pattern, error } of blockingPatterns) {
+    for (const { pattern, error } of hardBlockPatterns) {
         if (pageTextLower.includes(pattern)) {
-            console.log(`  🚫 Blocked: ${error} (detected "${pattern}")`);
-
-            // Auto-ban this sub to prevent future attempts
+            console.log(`  🚫 Hard block: ${error} (detected "${pattern}")`);
             try {
                 const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
-                await supabase
-                    .from('subreddits')
-                    .update({ is_banned: true })
-                    .eq('name', subreddit);
+                await supabase.from('subreddits').update({ is_banned: true }).eq('name', subreddit);
                 console.log(`  🛡️ Auto-banned r/${subreddit} in DB`);
-            } catch { /* ignore DB errors */ }
-
+            } catch { /* ignore */ }
             return { submitted: false, error: `r/${subreddit}: ${error}` };
         }
     }
 
-    // Also check for modal dialogs (Reddit uses various modal components)
+    // === PRIVATE/RESTRICTED COMMUNITY — TRY TO JOIN ===
+    const privatePatterns = [
+        'comunidade é privada', 'community is private', 'this community is private',
+        'apenas os membros aprovados', 'only approved members',
+        'comunidade é restrita', 'community is restricted',
+        'pedir para aderir', 'request to join',
+    ];
+
+    const isPrivate = privatePatterns.some(p => pageTextLower.includes(p));
+
+    if (isPrivate) {
+        console.log(`  🔐 Private/restricted community detected: r/${subreddit}`);
+        console.log(`  🧠 Generating smart join request with Claude...`);
+
+        // Look for the join request text area
+        const joinTextArea = page.locator('textarea, div[contenteditable="true"], input[type="text"]').first();
+        const hasJoinForm = await joinTextArea.isVisible({ timeout: 2000 }).catch(() => false);
+
+        if (hasJoinForm) {
+            try {
+                // Get model info for context
+                const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
+                const Anthropic = (await import('@anthropic-ai/sdk')).default;
+                const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+                // Generate a compelling join request
+                const response = await anthropic.messages.create({
+                    model: 'claude-sonnet-4-20250514',
+                    max_tokens: 200,
+                    system: `You are helping a Reddit content creator join r/${subreddit}.
+Write a SHORT, genuine message to request access to this private/restricted subreddit.
+
+RULES:
+- Be genuine and friendly, not desperate
+- Mention you're an active Reddit user who wants to participate
+- If the sub name suggests a niche (e.g. "braziliangirls", "latinas"), subtly show you fit
+- Keep it 2-3 sentences max
+- In English
+- Do NOT mention OnlyFans or any paid content
+- Sound like a real person, not a bot
+- Be respectful of the community
+
+Example: "Hey! I'm an active content creator and I'd love to be part of this community. I think my content fits well here and I'm happy to follow all the rules. Thanks for considering!"`,
+                    messages: [{
+                        role: 'user',
+                        content: `Write a join request for r/${subreddit}. Keep it short and genuine.`,
+                    }],
+                });
+
+                const joinMessage = response.content[0].type === 'text'
+                    ? response.content[0].text.trim()
+                    : 'Hi! I would love to join this community and contribute. Thanks for considering!';
+
+                console.log(`  ✍️ Join request: "${joinMessage.substring(0, 80)}..."`);
+
+                // Fill in the join request
+                await joinTextArea.click();
+                await page.waitForTimeout(500);
+                await joinTextArea.fill(joinMessage);
+                await page.waitForTimeout(500);
+
+                // Find and click the submit/send button
+                const submitSelectors = [
+                    'button:has-text("Enviar pedido")',
+                    'button:has-text("Send request")',
+                    'button:has-text("Submit")',
+                    'button:has-text("Enviar")',
+                    'button:has-text("Request")',
+                    'button:has-text("Join")',
+                ];
+
+                let submitted = false;
+                for (const sel of submitSelectors) {
+                    const btn = page.locator(sel).first();
+                    if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        const isDisabled = await btn.isDisabled().catch(() => false);
+                        if (!isDisabled) {
+                            await btn.click();
+                            submitted = true;
+                            console.log(`  ✅ Join request submitted for r/${subreddit}!`);
+                            break;
+                        }
+                    }
+                }
+
+                if (!submitted) {
+                    console.log(`  ⚠️ Could not find submit button for join request`);
+                }
+
+                // Mark sub as pending (not banned, just waiting for approval)
+                await supabase
+                    .from('subreddits')
+                    .update({
+                        posting_rules: {
+                            join_requested: true,
+                            join_requested_at: new Date().toISOString(),
+                            join_message: joinMessage,
+                        },
+                    })
+                    .eq('name', subreddit);
+
+                // Check if verification photos might be needed
+                const needsVerification = pageTextLower.includes('verif') ||
+                    pageTextLower.includes('foto') ||
+                    pageTextLower.includes('photo') ||
+                    pageTextLower.includes('paper') ||
+                    pageTextLower.includes('papel') ||
+                    pageTextLower.includes('handwritten');
+
+                // Notify model via Telegram
+                const { data: model } = await supabase
+                    .from('models')
+                    .select('phone')
+                    .limit(1)
+                    .single();
+
+                if (model?.phone) {
+                    const safeSub = subreddit.replace(/_/g, '\\_');
+                    let telegramMsg = `🔐 r/${safeSub} é uma comunidade privada!\n\n` +
+                        `✅ Enviamos um pedido de acesso automaticamente.\n` +
+                        `📝 Mensagem: "${joinMessage.substring(0, 100)}"`;
+
+                    if (needsVerification) {
+                        telegramMsg += `\n\n⚠️ Esse sub pode pedir verificação com foto.\n` +
+                            `Se precisar, envie aqui a foto de verificação (nome do user escrito em papel).`;
+                    }
+
+                    telegramMsg += `\n\nQuando for aceita, eu posto automaticamente!`;
+
+                    const { sendTelegramMessage } = await import('./telegram');
+                    await sendTelegramMessage(Number(model.phone), telegramMsg);
+                }
+
+            } catch (err) {
+                console.error('  ⚠️ Join request error:', err instanceof Error ? err.message : err);
+            }
+        } else {
+            console.log(`  ⚠️ No join form found on private community page`);
+        }
+
+        return { submitted: false, error: `r/${subreddit}: private community (join request sent)` };
+    }
+
+    // Also check for modal dialogs with blocking content
     const modalSelectors = [
         'div[role="dialog"]',
         'div[class*="modal"]',
@@ -645,28 +774,53 @@ async function tryNewRedditSubmit(
                 const modalText = await modal.textContent().catch(() => '') || '';
                 const modalLower = modalText.toLowerCase();
 
-                // Check if modal contains blocking content
+                // Check if it's a private/restricted modal
                 if (modalLower.includes('privad') || modalLower.includes('private') ||
-                    modalLower.includes('restri') || modalLower.includes('banned') ||
-                    modalLower.includes('aderir') || modalLower.includes('join')) {
-                    console.log(`  🚫 Blocking modal detected: "${modalText.substring(0, 100)}"`);
+                    modalLower.includes('restri') || modalLower.includes('aderir') ||
+                    modalLower.includes('join')) {
 
-                    // Close modal and return
+                    // Try to fill join request in modal too
+                    const modalTextArea = modal.locator('textarea, div[contenteditable="true"], input[type="text"]').first();
+                    if (await modalTextArea.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        try {
+                            const Anthropic = (await import('@anthropic-ai/sdk')).default;
+                            const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+                            const resp = await anthropic.messages.create({
+                                model: 'claude-sonnet-4-20250514',
+                                max_tokens: 100,
+                                messages: [{ role: 'user', content: `Write a 2-sentence join request for r/${subreddit}. Be genuine, no mentions of paid content.` }],
+                            });
+                            const msg = resp.content[0].type === 'text' ? resp.content[0].text.trim() : 'I would love to join this community!';
+
+                            await modalTextArea.click();
+                            await modalTextArea.fill(msg);
+                            await page.waitForTimeout(500);
+
+                            // Try submit
+                            const submitBtn = modal.locator('button:has-text("Enviar"), button:has-text("Submit"), button:has-text("Send"), button:has-text("Request")').first();
+                            if (await submitBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                                await submitBtn.click();
+                                console.log(`  ✅ Join request submitted via modal for r/${subreddit}`);
+                            }
+                        } catch { /* ignore */ }
+                    }
+
+                    // Close modal
                     const closeBtn = modal.locator('button:has-text("Ir para"), button:has-text("Go"), button:has-text("Close"), button[aria-label="close"]').first();
                     if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
                         await closeBtn.click();
                     }
 
-                    // Auto-ban
+                    return { submitted: false, error: `r/${subreddit}: private community (join request sent)` };
+                }
+
+                // Check for banned
+                if (modalLower.includes('banned')) {
                     try {
                         const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
-                        await supabase
-                            .from('subreddits')
-                            .update({ is_banned: true })
-                            .eq('name', subreddit);
+                        await supabase.from('subreddits').update({ is_banned: true }).eq('name', subreddit);
                     } catch { /* ignore */ }
-
-                    return { submitted: false, error: `r/${subreddit}: private or restricted community` };
+                    return { submitted: false, error: `r/${subreddit}: banned` };
                 }
             }
         } catch { continue; }
