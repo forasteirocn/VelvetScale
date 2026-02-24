@@ -1152,27 +1152,63 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
             console.log(`  ✅ Flair "${targetText}" selected`);
             await page.waitForTimeout(1500);
 
-            // Check for Apply/Save button
-            const applyResult = await askClaudeWhatToClick(
-                page,
-                'I selected a flair in a modal. Is there an "Apply", "Save" or "Done" button? Tell me the exact text. If modal closed, say "none".'
-            );
+            // Look for a real Apply/Save/Done button — but NOT "Adicionar flair" which opens the picker!
+            // Many subs auto-confirm on selection, so Escape is the safe fallback
+            let applied = false;
 
-            if (applyResult.action !== 'none' && applyResult.target) {
+            // Only click buttons that are clearly confirmation buttons (not open-picker buttons)
+            const applySelectors = [
+                // Specific confirm patterns — anything with Apply, Save, Done, Confirm, OK
+                'button:has-text("Apply"):not(:has-text("flair"))',
+                'button:has-text("Save flairs")',
+                'button:has-text("Done")',
+                'button:has-text("Salvar")',
+                'button:has-text("OK")',
+                'button:has-text("Confirm")',
+                '[role="dialog"] button[type="submit"]',
+                // Submit inside a flair-specific dialog
+                'shreddit-post-flair-picker button[type="submit"]',
+                'flair-selector button[type="submit"]',
+            ];
+
+            for (const apSel of applySelectors) {
                 try {
-                    await page.click(`text="${applyResult.target}"`, { timeout: 3000, force: true });
-                    console.log(`  ✅ Flair applied: "${applyResult.target}"`);
-                    await page.waitForTimeout(1000);
-                } catch {
-                    // Try getByText
-                    try {
-                        await page.getByText(applyResult.target, { exact: false }).first().click({ force: true, timeout: 2000 });
-                        console.log(`  ✅ Flair applied via getByText`);
+                    const apBtn = page.locator(apSel).first();
+                    if (await apBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        const btnText = await apBtn.textContent().catch(() => '');
+                        // Skip if text looks like an open-picker button
+                        if (btnText && (btnText.toLowerCase().includes('adicionar') || btnText.toLowerCase().includes('add flair'))) {
+                            continue;
+                        }
+                        await apBtn.click({ force: true });
+                        applied = true;
+                        console.log(`  ✅ Flair confirmed via: "${btnText?.trim()}"`);
                         await page.waitForTimeout(1000);
-                    } catch { /* ignore */ }
-                }
+                        break;
+                    }
+                } catch { continue; }
             }
+
+            if (!applied) {
+                // Press Escape to close the picker — this confirms selection on most subs
+                await page.keyboard.press('Escape').catch(() => { });
+                await page.waitForTimeout(800);
+                // Also try clicking outside the picker
+                await page.mouse.click(50, 50).catch(() => { });
+                await page.waitForTimeout(500);
+                console.log(`  ✅ Flair picker closed (Escape)`);
+            }
+
+            // Verify flair is now reflected in the form
+            await page.waitForTimeout(1000);
+            const flairConfirmed = await page.evaluate((text) => {
+                const body = document.body.innerHTML.toLowerCase();
+                return body.includes(text.toLowerCase());
+            }, targetText);
+            console.log(`  ${flairConfirmed ? '✅' : '⚠️'} Flair "${targetText}" ${flairConfirmed ? 'confirmed in form' : 'may not be confirmed'}`);
+
             return true;
+
         }
 
         console.log(`  ⚠️ Failed to select flair "${targetText}" with all strategies`);
