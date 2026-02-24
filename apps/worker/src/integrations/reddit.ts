@@ -1000,24 +1000,42 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
 
     async function trySelectFlair(): Promise<boolean> {
         // Step 1: Find and click the flair button/picker
+        // Reddit uses different elements across subs — buttons, divs, spans, web components
         const flairTriggerSelectors = [
+            // Standard buttons
             'button[aria-label*="flair" i]',
             'button[aria-label*="Add flair"]',
             'button:has-text("Add flair")',
             'button:has-text("Flair")',
             'button:has-text("Adicionar flair")',
+            'button:has-text("Select flair")',
+            'button:has-text("Choose flair")',
+            // Shreddit web components (new Reddit)
+            'shreddit-post-flair-picker',
             'shreddit-post-flair-picker button',
+            'flair-selector',
             'flair-selector button',
-            '[data-testid="post-flair-picker"] button',
-            'div[class*="flair"] button',
-            'button[class*="flair"]',
+            // Non-button clickable elements
+            '[data-testid="post-flair-picker"]',
+            '[data-testid="post-flair-picker"] *',
+            'div[class*="flair" i]',
+            'span[class*="flair" i]',
+            '[class*="FlairPicker"]',
+            '[class*="flair-picker"]',
+            '[class*="flair_picker"]',
+            // Any element with flair in aria
+            '[aria-label*="flair" i]',
+            '[aria-label*="Flair" i]',
+            // Inline flair text
+            ':text("Add flair")',
+            ':text("Flair")',
         ];
 
         let flairOpened = false;
         for (const sel of flairTriggerSelectors) {
             try {
                 const btn = page.locator(sel).first();
-                if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+                if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
                     await btn.click();
                     await page.waitForTimeout(1500);
                     flairOpened = true;
@@ -1025,6 +1043,34 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
                     break;
                 }
             } catch { continue; }
+        }
+
+        // Fallback: search the DOM with JS for any clickable element containing "flair"
+        if (!flairOpened) {
+            try {
+                const clicked = await page.evaluate(() => {
+                    const allElements = document.querySelectorAll('button, div, span, a, label, [role="button"]');
+                    for (const el of allElements) {
+                        const text = (el.textContent || '').toLowerCase().trim();
+                        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const className = (el.className || '').toString().toLowerCase();
+
+                        if ((text.includes('flair') || ariaLabel.includes('flair') || className.includes('flair')) &&
+                            !text.includes('no flair') &&
+                            (el as HTMLElement).offsetHeight > 0) {
+                            (el as HTMLElement).click();
+                            return `JS: "${text.substring(0, 30)}" (${el.tagName})`;
+                        }
+                    }
+                    return null;
+                });
+
+                if (clicked) {
+                    flairOpened = true;
+                    console.log(`  🏷️ Flair picker opened via ${clicked}`);
+                    await page.waitForTimeout(1500);
+                }
+            } catch { /* ignore */ }
         }
 
         if (!flairOpened) {
