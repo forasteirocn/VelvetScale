@@ -82,19 +82,49 @@ async function buildKarmaForModel(
     const remaining = 5 - todayCount;
     const actionsThisRound = Math.min(remaining, 3); // Max 3 per cycle
 
-    // Get 5 random subs from the model's list
+    // Get model's approved subs
     const { data: subs } = await supabase
         .from('subreddits')
-        .select('name')
+        .select('name, posting_rules')
         .eq('model_id', model.id)
         .eq('is_approved', true)
         .eq('is_banned', false);
 
     if (!subs?.length) return;
 
-    // Shuffle and pick 3
-    const shuffled = [...subs].sort(() => Math.random() - 0.5);
-    const targetSubs = shuffled.slice(0, actionsThisRound);
+    // PRIORITY: subs that require verification or have pending join requests
+    // These need engagement (comments, upvotes) to prove we're real members
+    const verificationSubs = subs.filter(s => {
+        const rules = s.posting_rules as Record<string, unknown> | null;
+        if (!rules) return false;
+        return rules.requires_verification ||
+            rules.join_requested ||
+            rules.verification_required;
+    });
+
+    const regularSubs = subs.filter(s => !verificationSubs.includes(s));
+
+    // Pick targets: verification subs first, then fill with random
+    let targetSubs: typeof subs = [];
+
+    if (verificationSubs.length > 0) {
+        // Prioritize verification subs (at least 2 of 3 slots)
+        const shuffledVerif = [...verificationSubs].sort(() => Math.random() - 0.5);
+        const verifCount = Math.min(shuffledVerif.length, Math.max(2, actionsThisRound));
+        targetSubs = shuffledVerif.slice(0, verifCount);
+
+        // Fill remaining slots with regular subs
+        if (targetSubs.length < actionsThisRound && regularSubs.length > 0) {
+            const shuffledReg = [...regularSubs].sort(() => Math.random() - 0.5);
+            targetSubs.push(...shuffledReg.slice(0, actionsThisRound - targetSubs.length));
+        }
+
+        console.log(`  🎯 Prioritizing verification subs: ${verificationSubs.map(s => s.name).join(', ')}`);
+    } else {
+        // No verification subs — pick random
+        const shuffled = [...subs].sort(() => Math.random() - 0.5);
+        targetSubs = shuffled.slice(0, actionsThisRound);
+    }
 
     console.log(`  ⭐ Building karma in ${targetSubs.map(s => s.name).join(', ')}`);
 
@@ -232,6 +262,7 @@ Write a genuine comment.`,
 
 /**
  * Post a comment on a Reddit post via Playwright
+ * Uses old.reddit.com where the DOM is simple standard HTML
  */
 async function postKarmaComment(
     modelId: string,
@@ -267,135 +298,100 @@ async function postKarmaComment(
         await context.addCookies(cookies);
 
         page = await context.newPage();
-        await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(4000);
 
-        // === STEP 1: Click on the "Add a comment" placeholder to activate the editor ===
-        console.log(`    🔍 Looking for comment area...`);
+        // === USE OLD REDDIT — simple DOM, no shadow DOM / web components ===
+        // Convert URL: www.reddit.com → old.reddit.com
+        const oldRedditUrl = postUrl.replace('www.reddit.com', 'old.reddit.com');
+        console.log(`    🔗 Navigating to ${oldRedditUrl.substring(0, 70)}...`);
 
-        const placeholderSelectors = [
-            // New Reddit (shreddit)
-            'shreddit-comment-share-form [placeholder*="comment" i]',
-            'shreddit-comment-share-form [placeholder*="Add" i]',
-            'shreddit-comment-share-form div[contenteditable]',
-            'shreddit-composer [placeholder]',
-            // New Reddit (generic)
-            'div[data-test-id="comment-submission-form-richtext"] [placeholder]',
-            'div[placeholder*="comment" i]',
-            'div[placeholder*="Add" i]',
-            'div[placeholder*="thought" i]',
-            // Text areas
-            'textarea[placeholder*="comment" i]',
-            'textarea[placeholder*="Add" i]',
-            'textarea[placeholder*="thought" i]',
-            'textarea[name="comment"]',
-            // Clickable comment area
-            'div[role="textbox"]',
-            '[contenteditable="true"][role="textbox"]',
+        await page.goto(oldRedditUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(3000);
+
+        // Check if logged in on old Reddit
+        const loggedIn = await page.locator('.user a').isVisible({ timeout: 3000 }).catch(() => false);
+        if (!loggedIn) {
+            console.log(`    ⚠️ Not logged in on old Reddit, skipping`);
+            return false;
+        }
+
+        // === STEP 1: Upvote the post first (natural behavior) ===
+        try {
+            const upvoteBtn = page.locator('.thing.link .arrow.up, .thing.link .arrow.upmod').first();
+            if (await upvoteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                const isUpvoted = await upvoteBtn.getAttribute('class').catch(() => '');
+                if (!isUpvoted?.includes('upmod')) {
+                    await upvoteBtn.click();
+                    await page.waitForTimeout(1000);
+                    console.log(`    👍 Upvoted post`);
+                }
+            }
+        } catch { /* ignore upvote errors */ }
+
+        // === STEP 2: Find the comment textarea ===
+        console.log(`    🔍 Looking for comment textarea...`);
+
+        // Old Reddit comment box selectors (standard HTML)
+        const commentBoxSelectors = [
+            'textarea[name="text"]',                    // Old Reddit main comment box
+            '.usertext-edit textarea',                   // Old Reddit comment form
+            'form.cloneable textarea',                   // Comment form
+            '#comment_reply_form textarea',              // Legacy
+            '.commentarea textarea',                     // Comment area
+            'textarea.c-form-control',                   // Classic form
         ];
 
-        let editorFound = false;
-
-        for (const sel of placeholderSelectors) {
+        let commentBox = null;
+        for (const sel of commentBoxSelectors) {
             try {
                 const el = page.locator(sel).first();
                 if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    console.log(`    ✅ Found comment area: ${sel}`);
-                    await el.scrollIntoViewIfNeeded().catch(() => { });
-                    await page.waitForTimeout(500);
-                    await el.click();
-                    await page.waitForTimeout(1500);
-                    editorFound = true;
+                    commentBox = el;
+                    console.log(`    ✅ Found comment box: ${sel}`);
                     break;
                 }
             } catch { continue; }
         }
 
-        if (!editorFound) {
-            // Try scrolling down — comment box might be below the fold
-            await page.evaluate(() => window.scrollTo(0, 500));
+        if (!commentBox) {
+            // Scroll down to find it
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight * 0.3));
             await page.waitForTimeout(2000);
 
-            for (const sel of placeholderSelectors) {
+            for (const sel of commentBoxSelectors) {
                 try {
                     const el = page.locator(sel).first();
                     if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-                        console.log(`    ✅ Found comment area after scroll: ${sel}`);
-                        await el.click();
-                        await page.waitForTimeout(1500);
-                        editorFound = true;
+                        commentBox = el;
+                        console.log(`    ✅ Found comment box after scroll: ${sel}`);
                         break;
                     }
                 } catch { continue; }
             }
         }
 
-        if (!editorFound) {
-            console.log(`    ⚠️ Could not find comment area on ${postUrl.substring(0, 60)}`);
+        if (!commentBox) {
+            console.log(`    ⚠️ No comment textarea found on old Reddit`);
             return false;
         }
 
-        // === STEP 2: Type the comment (use keyboard, not fill, for contenteditable) ===
+        // === STEP 3: Type the comment ===
         console.log(`    ✍️ Typing comment...`);
-
-        // After clicking, the active editor might be a new element
-        const activeEditorSelectors = [
-            'div[contenteditable="true"][role="textbox"]',
-            'div[contenteditable="true"]:focus',
-            'div[contenteditable="true"]',
-            'textarea:focus',
-            'shreddit-composer div[contenteditable="true"]',
-        ];
-
-        let typed = false;
-        for (const sel of activeEditorSelectors) {
-            try {
-                const editor = page.locator(sel).first();
-                if (await editor.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await editor.click();
-                    await page.waitForTimeout(300);
-
-                    // Use keyboard.type for contenteditable (fill doesn't work)
-                    await page.keyboard.type(commentText, { delay: 30 });
-                    typed = true;
-                    console.log(`    ✅ Comment typed via: ${sel}`);
-                    break;
-                }
-            } catch { continue; }
-        }
-
-        // Fallback: try textarea fill
-        if (!typed) {
-            try {
-                const textarea = page.locator('textarea').first();
-                if (await textarea.isVisible({ timeout: 1000 }).catch(() => false)) {
-                    await textarea.fill(commentText);
-                    typed = true;
-                    console.log(`    ✅ Comment typed via textarea fill`);
-                }
-            } catch { /* ignore */ }
-        }
-
-        if (!typed) {
-            console.log(`    ⚠️ Could not type in comment editor`);
-            return false;
-        }
-
+        await commentBox.click();
+        await page.waitForTimeout(500);
+        await commentBox.fill(commentText);
         await page.waitForTimeout(1000);
 
-        // === STEP 3: Click submit ===
+        // === STEP 4: Submit ===
         console.log(`    📤 Submitting comment...`);
 
         const submitSelectors = [
-            'button:has-text("Comment")',
-            'button:has-text("Reply")',
-            'button:has-text("Comentar")',
-            'button:has-text("Responder")',
-            'shreddit-comment-share-form button[type="submit"]',
-            'button[type="submit"]',
-            // Icon-based submit
-            'button[aria-label*="comment" i]',
-            'button[aria-label*="submit" i]',
+            'button[type="submit"]:has-text("save")',    // Old Reddit
+            'button[type="submit"]:has-text("comment")', // Variant
+            'button.save',                                // Old Reddit classic
+            '.usertext-buttons button[type="submit"]',   // usertext form
+            'input[type="submit"][value="save"]',        // Legacy input
+            'button:has-text("Save")',                    // Generic
+            'button:has-text("Comment")',                 // Fallback
         ];
 
         let commented = false;
@@ -408,7 +404,7 @@ async function postKarmaComment(
                         await submitBtn.click();
                         commented = true;
                         await page.waitForTimeout(3000);
-                        console.log(`    ✅ Karma comment posted in ${postUrl.substring(0, 60)}`);
+                        console.log(`    ✅ Karma comment posted!`);
                         break;
                     }
                 }

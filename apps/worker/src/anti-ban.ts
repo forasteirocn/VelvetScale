@@ -228,6 +228,32 @@ export async function validatePostBeforeSubmit(
     // Check if verification is required
     if (rules.requiresVerification) {
         result.warnings.push(`r/${subredditName} requires verification — post may be removed`);
+
+        // Save flag so karma builder can prioritize this sub
+        if (modelId) {
+            try {
+                const supa = getSupabaseAdmin();
+                const { data: existing } = await supa
+                    .from('subreddits')
+                    .select('posting_rules')
+                    .eq('model_id', modelId)
+                    .eq('name', subredditName)
+                    .single();
+
+                const currentRules = (existing?.posting_rules as Record<string, unknown>) || {};
+                await supa
+                    .from('subreddits')
+                    .update({
+                        posting_rules: {
+                            ...currentRules,
+                            requires_verification: true,
+                            verification_detected_at: new Date().toISOString(),
+                        },
+                    })
+                    .eq('model_id', modelId)
+                    .eq('name', subredditName);
+            } catch { /* ignore */ }
+        }
     }
 
     // Check title against banned words
