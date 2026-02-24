@@ -1306,16 +1306,29 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
                             }
                         }
 
-                        // Every 5 seconds, re-trigger blur/input events on form fields
+                        // Every 5 seconds, forcefully re-evaluate form state by making a real change and reverting it
                         if (i % 5 === 0 && i > 0) {
-                            await page.evaluate(() => {
-                                document.querySelectorAll('textarea, input').forEach(el => {
-                                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                            console.log(`  🔄 Deep re-validation (${i}s) — touching form fields...`);
+                            try {
+                                const titleInput = page.locator('textarea[name="title"], input[name="title"], shreddit-title').first();
+                                if (await titleInput.isVisible({ timeout: 1000 }).catch(() => false)) {
+                                    await titleInput.focus();
+                                    await page.keyboard.press('Space');
+                                    await page.waitForTimeout(100);
+                                    await page.keyboard.press('Backspace');
+                                }
+
+                                // Dispatch events globally
+                                await page.evaluate(() => {
+                                    document.querySelectorAll('textarea, input').forEach(el => {
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                                    });
+                                    // Specifically click the body to trigger stray blurs
+                                    document.body.click();
                                 });
-                            });
-                            console.log(`  🔄 Re-triggered validation (${i}s)...`);
+                            } catch { /* ignore */ }
                         }
                         await page.waitForTimeout(1000);
                     }
