@@ -1,9 +1,116 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { CommandIntent } from '@velvetscale/shared';
+import axios from 'axios';
 
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+// =============================================
+// Visual Intelligence
+// Claude analyzes photos to choose better subs
+// =============================================
+
+export interface ImageAnalysis {
+    setting: string;       // e.g. "bedroom selfie", "beach", "gym"
+    outfit: string;        // e.g. "bikini", "lingerie", "casual"
+    mood: string;          // e.g. "flirty", "cute", "bold"
+    bodyFeatures: string[];// e.g. ["tattooed", "curvy", "petite"]
+    suggestedNiches: string[]; // e.g. ["alternative", "curvy", "latina"]
+    description: string;   // Full description for context
+}
+
+/**
+ * Download an image and convert to base64 for Claude Vision
+ */
+async function fetchImageAsBase64(imageUrl: string): Promise<{ data: string; mediaType: string } | null> {
+    try {
+        const response = await axios.get(imageUrl, {
+            responseType: 'arraybuffer',
+            timeout: 15000,
+        });
+        const buffer = Buffer.from(response.data);
+        const base64 = buffer.toString('base64');
+
+        // Detect media type
+        const contentType = response.headers['content-type'] || 'image/jpeg';
+        const mediaType = contentType.includes('png') ? 'image/png'
+            : contentType.includes('webp') ? 'image/webp'
+                : contentType.includes('gif') ? 'image/gif'
+                    : 'image/jpeg';
+
+        return { data: base64, mediaType };
+    } catch (err) {
+        console.error('⚠️ Failed to fetch image for analysis:', err instanceof Error ? err.message : err);
+        return null;
+    }
+}
+
+/**
+ * Analyze an image using Claude Vision
+ * Returns structured data about the photo for smart sub/title selection
+ */
+export async function analyzeImage(imageUrl: string): Promise<ImageAnalysis | null> {
+    try {
+        const imageData = await fetchImageAsBase64(imageUrl);
+        if (!imageData) return null;
+
+        console.log('🧠 Analisando foto com Claude Vision...');
+
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 400,
+            system: `You are an expert at analyzing photos for Reddit posting strategy.
+Analyze the photo and return a JSON object describing it.
+
+Focus on:
+- Setting (where the photo was taken)
+- Outfit/clothing
+- Mood/energy of the photo
+- Notable body features (tattoos, piercings, body type, hair color, ethnicity)
+- What Reddit niches/communities this photo would fit
+
+Respond with ONLY valid JSON:
+{
+  "setting": "brief description of location/background",
+  "outfit": "what they're wearing",
+  "mood": "the vibe/energy",
+  "bodyFeatures": ["feature1", "feature2"],
+  "suggestedNiches": ["niche1", "niche2", "niche3"],
+  "description": "One-sentence summary of the photo"
+}`,
+            messages: [{
+                role: 'user',
+                content: [
+                    {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: imageData.mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
+                            data: imageData.data,
+                        },
+                    },
+                    {
+                        type: 'text',
+                        text: 'Analyze this photo for Reddit posting strategy.',
+                    },
+                ],
+            }],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const analysis = JSON.parse(jsonMatch[0]) as ImageAnalysis;
+            console.log(`  👁️ Foto: ${analysis.description}`);
+            console.log(`  🎯 Nichos: ${analysis.suggestedNiches.join(', ')}`);
+            return analysis;
+        }
+    } catch (err) {
+        console.error('⚠️ Image analysis failed:', err instanceof Error ? err.message : err);
+    }
+    return null;
+}
 
 // =============================================
 // Command Interpreter
@@ -132,8 +239,20 @@ export async function improveCaption(
     subreddit: string,
     modelBio: string,
     persona: string,
-    links: { onlyfans?: string; privacy?: string }
+    links: { onlyfans?: string; privacy?: string },
+    imageAnalysis?: ImageAnalysis | null
 ): Promise<{ title: string; body: string }> {
+    // Build context from image analysis if available
+    const visualContext = imageAnalysis
+        ? `\n\nPhoto analysis (what Claude Vision saw):
+- Setting: ${imageAnalysis.setting}
+- Outfit: ${imageAnalysis.outfit}
+- Mood: ${imageAnalysis.mood}
+- Features: ${imageAnalysis.bodyFeatures.join(', ')}
+- Best niches: ${imageAnalysis.suggestedNiches.join(', ')}
+- Description: ${imageAnalysis.description}`
+        : '';
+
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
@@ -141,6 +260,7 @@ export async function improveCaption(
 The model wrote a caption for their photo post. Your job is to:
 1. Create a catchy Reddit title that gets upvotes
 2. Keep it short, natural, and engaging
+3. ${imageAnalysis ? 'USE the photo analysis to make the title match what\'s actually in the photo' : 'Make the title engaging based on the caption'}
 
 STRICT RULES:
 - NEVER include any links or URLs
@@ -151,6 +271,7 @@ STRICT RULES:
 - Match the subreddit's vibe perfectly
 - Keep it short (under 100 characters ideally)
 - Use curiosity, humor, or relatability — NOT promotion
+- ${imageAnalysis ? 'Reference the photo content naturally (e.g. if she\'s at the beach, mention it)' : ''}
 - Persona: ${persona || 'friendly, flirty, and approachable'}
 
 Examples of GOOD titles:
@@ -158,6 +279,7 @@ Examples of GOOD titles:
 - "Sunday morning vibes ☀️"
 - "Do you prefer brunettes or blondes? 😏"
 - "First post here, be nice!"
+- "My new tattoo needed some attention 😏" (if photo shows tattoo)
 
 Examples of BAD titles (never do this):
 - "Check out my OF link in bio!"
@@ -170,7 +292,7 @@ Respond with JSON: { "title": "..." }`,
                 role: 'user',
                 content: `Original caption: ${originalCaption}
 Subreddit: r/${subreddit}
-Model bio: ${modelBio}
+Model bio: ${modelBio}${visualContext}
 
 Create a catchy title for this photo post. No links, no promotion.`,
             },
@@ -304,7 +426,8 @@ Suggest 5-10 subreddits, ordered by potential impact.`,
  */
 export async function pickBestSubForCaption(
     caption: string,
-    availableSubs: string[]
+    availableSubs: string[],
+    imageAnalysis?: ImageAnalysis | null
 ): Promise<string> {
     // If only 1 sub, just return it
     if (availableSubs.length <= 1) return availableSubs[0] || '';
@@ -313,17 +436,23 @@ export async function pickBestSubForCaption(
     const shuffled = [...availableSubs].sort(() => Math.random() - 0.5);
     const candidates = shuffled.slice(0, 30);
 
+    // Build visual context if available
+    const visualContext = imageAnalysis
+        ? `\n\nPhoto analysis:\n- Setting: ${imageAnalysis.setting}\n- Outfit: ${imageAnalysis.outfit}\n- Mood: ${imageAnalysis.mood}\n- Features: ${imageAnalysis.bodyFeatures.join(', ')}\n- Best niches: ${imageAnalysis.suggestedNiches.join(', ')}\n- Description: ${imageAnalysis.description}`
+        : '';
+
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 100,
             system: `You pick the single best subreddit for a photo post. 
-Consider: the caption vibe, the subreddit's theme, and where the post would get the most engagement.
+Consider: ${imageAnalysis ? 'the PHOTO ANALYSIS (most important), ' : ''}the caption vibe, the subreddit's theme, and where the post would get the most engagement.
+${imageAnalysis ? 'Match the photo\'s visual characteristics to the subreddit\'s niche. For example: tattoo photos → tattoo subs, curvy body → curvy subs, alternative look → alt subs.' : ''}
 Respond with ONLY the subreddit name, nothing else. No "r/", no explanation.`,
             messages: [
                 {
                     role: 'user',
-                    content: `Caption: "${caption}"
+                    content: `Caption: "${caption}"${visualContext}
 
 Available subreddits:
 ${candidates.map(s => `- ${s}`).join('\n')}
@@ -343,7 +472,7 @@ Which ONE subreddit is the best match?`,
         );
 
         if (match) {
-            console.log(`🎯 Claude escolheu: r/${match} para "${caption}"`);
+            console.log(`🎯 Claude escolheu: r/${match} para "${caption}"${imageAnalysis ? ' (com visão)' : ''}`);
             return match;
         }
     } catch (err) {

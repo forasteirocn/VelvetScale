@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
-import { improveCaption, pickBestSubForCaption } from './integrations/claude';
+import { improveCaption, pickBestSubForCaption, analyzeImage, type ImageAnalysis } from './integrations/claude';
 import Anthropic from '@anthropic-ai/sdk';
 
 // =============================================
@@ -122,11 +122,15 @@ export async function analyzeAndSchedule(
     for (const photo of photos) {
         await sendTelegramMessage(chatId, '🧠 Analisando estrategia para sua foto...');
 
+        // Analyze the image with Claude Vision
+        const imageAnalysis = await analyzeImage(photo.url);
+
         const strategy = await getPostingStrategy(
             photo.caption,
             availableSubs,
             model.bio || '',
-            model.persona || ''
+            model.persona || '',
+            imageAnalysis
         );
 
         if (strategy.length === 0) {
@@ -146,7 +150,8 @@ export async function analyzeAndSchedule(
                     plan.subreddit,
                     model.bio || '',
                     model.persona || '',
-                    { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+                    { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                    imageAnalysis
                 );
                 title = improved.title;
             } catch {
@@ -220,7 +225,8 @@ async function getPostingStrategy(
         bestHour: number | null | undefined;
     }>,
     modelBio: string,
-    persona: string
+    persona: string,
+    imageAnalysis?: ImageAnalysis | null
 ): Promise<PostStrategy[]> {
     // Sort by engagement score desc, take top 40 for Claude
     const candidates = [...availableSubs]
@@ -237,7 +243,17 @@ async function getPostingStrategy(
             max_tokens: 800,
             system: `You are an expert Reddit marketing strategist for adult content creators.
 Your job is to choose the BEST 3 subreddits for a photo post, with optimal posting times.
+${imageAnalysis ? `
+IMPORTANT — Photo analysis (what Claude Vision saw):
+- Setting: ${imageAnalysis.setting}
+- Outfit: ${imageAnalysis.outfit}
+- Mood: ${imageAnalysis.mood}
+- Features: ${imageAnalysis.bodyFeatures.join(', ')}
+- Best niches: ${imageAnalysis.suggestedNiches.join(', ')}
+- Description: ${imageAnalysis.description}
 
+Use this visual information to match the photo to subreddits where it fits best.
+` : ''}
 KEY PRINCIPLES:
 - Choose subs where the content will naturally fit the community
 - Prioritize subs with high historical performance (upvotes)
@@ -380,21 +396,32 @@ export async function intelligentImmediatePost(
 
     await sendTelegramMessage(chatId, '🧠 Analisando melhor sub para sua foto...');
 
-    // Ask Claude for the single best sub
+    // Analyze the image with Claude Vision
+    const imageAnalysis = await analyzeImage(photoUrl);
+
+    // Ask Claude for the single best sub (with visual context)
     let targetSub: string;
     try {
+        // Build visual context for the prompt
+        const visualInfo = imageAnalysis
+            ? `\n\nPhoto analysis:\n- Setting: ${imageAnalysis.setting}\n- Outfit: ${imageAnalysis.outfit}\n- Mood: ${imageAnalysis.mood}\n- Features: ${imageAnalysis.bodyFeatures.join(', ')}\n- Niches: ${imageAnalysis.suggestedNiches.join(', ')}\n- Description: ${imageAnalysis.description}`
+            : '';
+
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 100,
             system: `Pick the single BEST subreddit for this photo post.
-Consider: caption vibe, subreddit culture fit, historical performance.
+Consider: ${imageAnalysis ? 'the PHOTO ANALYSIS (most important), ' : ''}caption vibe, subreddit culture fit, historical performance.
+${imageAnalysis ? 'Match the photo\'s visual characteristics to the subreddit\'s niche.' : ''}
 Respond with ONLY the subreddit name. No "r/", no explanation.`,
             messages: [{
                 role: 'user',
                 content: `Caption: "${caption}"
 
 Available subs with performance data:
-${subInfo}
+${subInfo}${imageAnalysis
+                        ? `\n\nPhoto analysis:\n- Setting: ${imageAnalysis.setting}\n- Outfit: ${imageAnalysis.outfit}\n- Mood: ${imageAnalysis.mood}\n- Features: ${imageAnalysis.bodyFeatures.join(', ')}\n- Niches: ${imageAnalysis.suggestedNiches.join(', ')}\n- Description: ${imageAnalysis.description}`
+                        : ''}
 
 Which ONE sub is the best match?`,
             }],
@@ -413,7 +440,7 @@ Which ONE sub is the best match?`,
     const safeSub = targetSub.replace(/_/g, '\\_');
     await sendTelegramMessage(chatId, `Postando agora em r/${safeSub}...`);
 
-    // Improve caption
+    // Improve caption (with visual context)
     let title = caption;
     try {
         const improved = await improveCaption(
@@ -421,7 +448,8 @@ Which ONE sub is the best match?`,
             targetSub,
             model.bio || '',
             model.persona || '',
-            { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+            { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+            imageAnalysis
         );
         title = improved.title;
     } catch { /* use original */ }
