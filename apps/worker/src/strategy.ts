@@ -274,6 +274,9 @@ async function getPostingStrategy(
 Your job is to choose the BEST 3 subreddits for a photo post, with optimal posting times.
 ${imageAnalysis ? `
 IMPORTANT — Photo analysis (what Claude Vision saw):
+- BODY PART FOCUS: ${imageAnalysis.bodyPartFocus || 'unknown'}
+- POSE: ${imageAnalysis.pose || 'unknown'}
+- Camera angle: ${imageAnalysis.cameraAngle || 'unknown'}
 - Setting: ${imageAnalysis.setting}
 - Outfit: ${imageAnalysis.outfit}
 - Mood: ${imageAnalysis.mood}
@@ -281,7 +284,8 @@ IMPORTANT — Photo analysis (what Claude Vision saw):
 - Best niches: ${imageAnalysis.suggestedNiches.join(', ')}
 - Description: ${imageAnalysis.description}
 
-Use this visual information to match the photo to subreddits where it fits best.
+CRITICAL: Only choose subs where the photo's body part focus and pose MATCH the sub's niche.
+Example: if body part focus is "breasts", do NOT pick butt-focused subs like FrogButt or pawg.
 ` : ''}
 KEY PRINCIPLES:
 - Choose subs where the content will naturally fit the community

@@ -15,6 +15,9 @@ export interface ImageAnalysis {
     setting: string;       // e.g. "bedroom selfie", "beach", "gym"
     outfit: string;        // e.g. "bikini", "lingerie", "casual"
     mood: string;          // e.g. "flirty", "cute", "bold"
+    pose: string;          // e.g. "standing", "squatting", "bending over", "lying down"
+    cameraAngle: string;   // e.g. "selfie", "mirror", "from behind", "from above"
+    bodyPartFocus: string; // e.g. "breasts", "butt", "face", "full body", "legs"
     bodyFeatures: string[];// e.g. ["tattooed", "curvy", "petite"]
     suggestedNiches: string[]; // e.g. ["alternative", "curvy", "latina"]
     description: string;   // Full description for context
@@ -61,20 +64,26 @@ export async function analyzeImage(imageUrl: string): Promise<ImageAnalysis | nu
             model: 'claude-sonnet-4-20250514',
             max_tokens: 400,
             system: `You are an expert at analyzing photos for Reddit posting strategy.
-Analyze the photo and return a JSON object describing it.
+Analyze the photo and return a JSON object with PRECISE details.
 
 Focus on:
-- Setting (where the photo was taken)
-- Outfit/clothing
-- Mood/energy of the photo
-- Notable body features (tattoos, piercings, body type, hair color, ethnicity)
-- What Reddit niches/communities this photo would fit
+- Setting (where the photo was taken: bedroom, outdoors, gym, bathroom, etc.)
+- Outfit/clothing (lingerie, bikini, dress, nude, topless, jeans, etc.)
+- Mood/energy (playful, seductive, confident, casual, artistic, etc.)
+- POSE (standing, sitting, lying down, squatting/frog pose, bending over, from behind, frontal, side profile, etc.)
+- CAMERA ANGLE (selfie/front-facing, mirror selfie, someone else took it, from above, from below, close-up, full body)
+- BODY PART FOCUS — what is the PRIMARY visual focus of the photo? (face, breasts/chest, butt/ass, legs, abs/stomach, full body, back, feet, etc.)
+- Notable body features (tattoos, piercings, body type like curvy/slim/athletic/thick, hair color, ethnicity hints)
+- What SPECIFIC Reddit niches this would fit (be precise: "curvy" not just "nsfw")
 
 Respond with ONLY valid JSON:
 {
   "setting": "brief description of location/background",
   "outfit": "what they're wearing",
   "mood": "the vibe/energy",
+  "pose": "specific pose description",
+  "cameraAngle": "how the photo was taken",
+  "bodyPartFocus": "what body part is the main visual focus",
   "bodyFeatures": ["feature1", "feature2"],
   "suggestedNiches": ["niche1", "niche2", "niche3"],
   "description": "One-sentence summary of the photo"
@@ -438,16 +447,51 @@ export async function pickBestSubForCaption(
 
     // Build visual context if available
     const visualContext = imageAnalysis
-        ? `\n\nPhoto analysis:\n- Setting: ${imageAnalysis.setting}\n- Outfit: ${imageAnalysis.outfit}\n- Mood: ${imageAnalysis.mood}\n- Features: ${imageAnalysis.bodyFeatures.join(', ')}\n- Best niches: ${imageAnalysis.suggestedNiches.join(', ')}\n- Description: ${imageAnalysis.description}`
+        ? `\n\nPHOTO ANALYSIS (use this to match the sub!):
+- Pose: ${imageAnalysis.pose || 'unknown'}
+- Camera angle: ${imageAnalysis.cameraAngle || 'unknown'}
+- Body part focus: ${imageAnalysis.bodyPartFocus || 'unknown'}
+- Setting: ${imageAnalysis.setting}
+- Outfit: ${imageAnalysis.outfit}
+- Mood: ${imageAnalysis.mood}
+- Features: ${imageAnalysis.bodyFeatures.join(', ')}
+- Best niches: ${imageAnalysis.suggestedNiches.join(', ')}
+- Description: ${imageAnalysis.description}`
         : '';
 
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 100,
-            system: `You pick the single best subreddit for a photo post. 
-Consider: ${imageAnalysis ? 'the PHOTO ANALYSIS (most important), ' : ''}the caption vibe, the subreddit's theme, and where the post would get the most engagement.
-${imageAnalysis ? 'Match the photo\'s visual characteristics to the subreddit\'s niche. For example: tattoo photos → tattoo subs, curvy body → curvy subs, alternative look → alt subs.' : ''}
+            system: `You pick the single best subreddit for a photo post.
+
+CRITICAL RULES — read carefully:
+1. The PHOTO ANALYSIS tells you exactly what's in the photo. USE IT.
+2. The body part focus is the MOST IMPORTANT factor.
+3. The pose determines which specific subs fit.
+4. DO NOT choose a sub unless the photo's content EXACTLY matches the sub's niche.
+
+COMMON SUB NICHES (know these!):
+- FrogButt = ONLY squatting/frog pose showing butt. NOT for any butt photo.
+- assholegonewild = close-up butt/rear photos
+- boobs/tits subs = breasts must be the PRIMARY focus
+- curvy = curvy/thick body type, any pose
+- latinas/braziliangirls = ethnicity-based, any content
+- selfie/faces = face must be visible and prominent
+- bikini/lingerie = specific clothing type
+- tattoo/alt subs = must have visible tattoos/alt style
+- gonewild = general NSFW, any content fits
+- thick/pawg = thick body type, often butt-focused
+- yoga/fit = athletic/fit body, exercise poses
+
+MATCHING EXAMPLES:
+✅ Photo: butt focus + squatting pose → FrogButt
+✅ Photo: butt focus + standing/bending → assholegonewild, pawg, thick
+✅ Photo: breast focus + frontal → boobs, tits, busty
+✅ Photo: full body + curvy + latina → latinas, curvy
+❌ Photo: breast focus → FrogButt (WRONG! FrogButt is for squatting butts only)
+❌ Photo: face selfie close-up → thick (WRONG! thick is about body)
+
 Respond with ONLY the subreddit name, nothing else. No "r/", no explanation.`,
             messages: [
                 {
