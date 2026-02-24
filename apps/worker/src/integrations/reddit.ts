@@ -594,15 +594,50 @@ export async function submitRedditImagePost(
             }
         }
 
-        await page.waitForTimeout(randomDelay(5000, 8000));
+        await page.waitForTimeout(3000);
 
-        // Get the post URL
-        const postUrl = page.url();
+        // Wait for URL to change from submit page to actual post
+        let postUrl = page.url();
+        const isStillOnSubmit = (url: string) => url.includes('/submit');
+
+        if (isStillOnSubmit(postUrl)) {
+            console.log('  ⏳ Waiting for redirect after submit...');
+            try {
+                // Wait up to 30s for navigation away from submit page
+                await page.waitForURL((url) => !url.toString().includes('/submit'), { timeout: 30000 });
+                postUrl = page.url();
+                console.log(`  ✅ Redirected to: ${postUrl}`);
+            } catch {
+                // Take a screenshot to see what happened
+                const afterPath = path.join(COOKIES_DIR, `debug_after_submit_${Date.now()}.png`);
+                await page.screenshot({ path: afterPath });
+                console.log(`  ⚠️ No redirect after 30s. Screenshot: ${afterPath}`);
+                console.log(`  Current URL: ${page.url()}`);
+
+                // Check if there's an error message on the page
+                const errorText = await page.locator('[class*="error"], [class*="Error"], .banner-message').textContent().catch(() => '');
+                if (errorText) {
+                    console.log(`  ❌ Error on page: ${errorText}`);
+                }
+                postUrl = page.url();
+            }
+        }
+
+        await page.waitForTimeout(2000);
+
+        // Verify if post was actually created
+        const postSuccess = postUrl.includes('/comments/') || postUrl.includes('/r/') && !postUrl.includes('/submit');
 
         // Delete temp image
         fs.unlinkSync(tempImagePath);
 
-        // Save to database
+        if (!postSuccess) {
+            await saveSession(modelId, context);
+            await page.close();
+            return { success: false, error: 'Post may not have been submitted — URL did not change from submit page. Check debug screenshot.' };
+        }
+
+        // Save to database only if post was actually created
         const supabase = getSupabaseAdmin();
         await supabase.from('posts').insert({
             model_id: modelId,
