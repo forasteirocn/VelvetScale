@@ -882,42 +882,71 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
     }
     await page.waitForTimeout(1000);
 
-    // Upload image via file input
+    // Upload image — using native drag-and-drop emulation for Shreddit React app
     console.log('📤 Uploading imagem...');
 
-    // In Shreddit, the file input is often hidden or inactive until the dropzone is interacted with
+    // Read the file as base64 to inject it via JS
+    const fs = await import('fs');
+    const pathParams = require('path');
+    let fileBuffer: Buffer | null = null;
     try {
-        // Try to click the upload area first to initialize the file input
-        const dropzoneSelectors = [
-            'div[data-testid="image-upload-area"]',
-            'div:has-text("Drag and drop")',
-            'div:has-text("Arrasta e larga")',
-            'button[aria-label="Upload"]',
-            'shreddit-gallery-input button',
-        ];
-        for (const dzSel of dropzoneSelectors) {
-            const dz = page.locator(dzSel).first();
-            if (await dz.isVisible({ timeout: 1000 }).catch(() => false)) {
-                await dz.click({ force: true });
-                await page.waitForTimeout(500);
-                break;
+        fileBuffer = fs.readFileSync(tempImagePath);
+    } catch (e) {
+        console.log('  ⚠️ Failed to read image for upload');
+    }
+
+    if (fileBuffer) {
+        const mimeType = tempImagePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+        const fileName = pathParams.basename(tempImagePath);
+        const base64Data = fileBuffer.toString('base64');
+
+        // Evaluate a native drop event
+        const dropSuccess = await page.evaluate(async ({ base64, mime, name }) => {
+            // Find the dropzone
+            const dropzone =
+                document.querySelector('div[data-testid="image-upload-area"]') ||
+                Array.from(document.querySelectorAll('div')).find(el => el.textContent?.includes('Drag and drop') || el.textContent?.includes('Arrasta e larga')) ||
+                document.querySelector('shreddit-gallery-input') ||
+                document.querySelector('input[type="file"]')?.parentElement ||
+                document.body;
+
+            if (!dropzone) return false;
+
+            // Convert base64 back to File object in browser
+            const res = await fetch(`data:${mime};base64,${base64}`);
+            const blob = await res.blob();
+            const file = new File([blob], name, { type: mime });
+
+            // Create DataTransfer
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+
+            // Dispatch drop event
+            const event = new DragEvent('drop', {
+                bubbles: true,
+                cancelable: true,
+                dataTransfer: dataTransfer
+            });
+            dropzone.dispatchEvent(event);
+
+            // Also try firing change event on file input just in case
+            const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+            if (fileInput) {
+                fileInput.files = dataTransfer.files;
+                fileInput.dispatchEvent(new Event('change', { bubbles: true }));
             }
-        }
-    } catch { /* ignore */ }
 
-    // Force the file input to be visible and attach file
-    await page.evaluate(() => {
-        document.querySelectorAll('input[type="file"]').forEach(el => {
-            (el as HTMLElement).style.display = 'block';
-            (el as HTMLElement).style.opacity = '1';
-            (el as HTMLElement).style.visibility = 'visible';
-            (el as HTMLElement).style.position = 'static';
-        });
-    });
+            return true;
+        }, { base64: base64Data, mime: mimeType, name: fileName });
 
-    await page.waitForTimeout(500);
-    const fileInput = page.locator('input[type="file"]').first();
-    await fileInput.setInputFiles(tempImagePath);
+        console.log(`  ${dropSuccess ? '✅' : '⚠️'} Drag-and-drop event dispatched`);
+    } else {
+        // Fallback to standard attach if read fails
+        try {
+            const fileInput = page.locator('input[type="file"]').first();
+            await fileInput.setInputFiles(tempImagePath);
+        } catch { /* ignore */ }
+    }
 
     // ======== IMPROVED: Wait for image upload to complete ========
     console.log('  ⏳ Aguardando upload completo...');
@@ -925,14 +954,13 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
 
     // Wait for upload preview to appear (up to 30s)
     const uploadCompleteSelectors = [
-        'img[src*="preview.redd.it"]',
-        'img[src*="i.redd.it"]',
-        'img[src*="redditmedia"]',
+        // Must be inside the post composer, not just a random avatar on the page
+        'shreddit-composer img[src*="preview.redd.it"]',
+        'shreddit-composer img[src*="i.redd.it"]',
+        'shreddit-composer img[src*="redditmedia"]',
+        'shreddit-composer faceplate-img[src*="redd"]',
         'div[data-testid="image-preview"] img',
-        'faceplate-img[src*="redd"]',
-        // Thumbnail/preview container
-        'div[class*="thumbnail"] img',
-        'div[class*="preview"] img',
+        'shreddit-gallery-carousel img',
     ];
 
     let uploadConfirmed = false;
