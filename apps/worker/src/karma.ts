@@ -3,8 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 
 // =============================================
 // VelvetScale Karma Builder
-// Makes natural comments on popular posts to build karma
-// Runs every 2 hours, max 5 comments/day
+// Makes natural comments + upvotes on popular posts to build karma
+// Runs every 45 min, max 15 actions/day (comments + upvotes)
 // =============================================
 
 const anthropic = new Anthropic({
@@ -16,13 +16,13 @@ let karmaInterval: ReturnType<typeof setInterval> | null = null;
 export function startKarmaBuilder(): void {
     if (karmaInterval) return;
 
-    console.log('⭐ Karma Builder iniciado (verifica a cada 2h)');
+    console.log('⭐ Karma Builder iniciado (verifica a cada 45 min)');
 
-    // First run after 5 minutes
+    // First run after 3 minutes
     setTimeout(() => {
         buildKarma();
-        karmaInterval = setInterval(buildKarma, 2 * 60 * 60 * 1000);
-    }, 5 * 60 * 1000);
+        karmaInterval = setInterval(buildKarma, 45 * 60 * 1000); // Every 45 min
+    }, 3 * 60 * 1000);
 }
 
 export function stopKarmaBuilder(): void {
@@ -63,7 +63,7 @@ async function buildKarmaForModel(
 ): Promise<void> {
     const supabase = getSupabaseAdmin();
 
-    // Check how many karma actions today (max 5)
+    // Check how many karma actions today (max 15)
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
 
@@ -74,13 +74,13 @@ async function buildKarmaForModel(
         .gte('created_at', todayStart.toISOString());
 
     const todayCount = count || 0;
-    if (todayCount >= 5) {
-        console.log(`  ⭐ ${model.id}: Already at 5 karma actions today, skipping`);
+    if (todayCount >= 15) {
+        console.log(`  ⭐ ${model.id}: Already at 15 karma actions today, skipping`);
         return;
     }
 
-    const remaining = 5 - todayCount;
-    const actionsThisRound = Math.min(remaining, 3); // Max 3 per cycle
+    const remaining = 15 - todayCount;
+    const actionsThisRound = Math.min(remaining, 5); // Max 5 per cycle
 
     // Get model's approved subs
     const { data: subs } = await supabase
@@ -166,8 +166,8 @@ async function buildKarmaForModel(
                 console.log(`    ✅ Commented in r/${sub.name}: "${comment.substring(0, 50)}..."`);
             }
 
-            // Human-like delay between actions (3-10 minutes)
-            const delay = 180000 + Math.random() * 420000;
+            // Human-like delay between actions (1-3 minutes)
+            const delay = 60000 + Math.random() * 120000;
             await new Promise(r => setTimeout(r, delay));
 
         } catch (err) {
