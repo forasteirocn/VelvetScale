@@ -1325,6 +1325,142 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
         }
     }
 
+    // ======== Handle FLAIR MODAL after submit ========
+    // Some subs show a flair selection modal AFTER clicking Post
+    // The modal blocks everything — must handle it first
+    await page.waitForTimeout(1500);
+    console.log('  🔍 Checking for post-submit flair modal...');
+
+    try {
+        const flairModalDetected = await page.evaluate(() => {
+            const dialogs = document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], .modal, div[class*="overlay"], div[class*="modal"]');
+            for (const d of dialogs) {
+                const text = (d.textContent || '').toLowerCase();
+                const visible = (d as HTMLElement).offsetHeight > 0;
+                if (visible && (text.includes('flair') || text.includes('tag') || text.includes('category'))) {
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        if (flairModalDetected) {
+            console.log('  🏷️ FLAIR MODAL detected after submit! Selecting flair...');
+
+            // Find flair options inside the modal
+            const modalFlairSelectors = [
+                'dialog [role="option"]',
+                'dialog [role="radio"]',
+                'dialog [role="menuitemradio"]',
+                'dialog label:has(input[type="radio"])',
+                'dialog li',
+                '[role="dialog"] [role="option"]',
+                '[role="dialog"] [role="radio"]',
+                '[role="dialog"] [role="menuitemradio"]',
+                '[role="dialog"] label:has(input[type="radio"])',
+                '[role="dialog"] li',
+                '[role="dialog"] button[class*="flair"]',
+                // Generic modal selectors
+                '.modal [role="option"]',
+                '.modal li',
+                '.modal label',
+                // Any visible radio/option in a dialog-like overlay
+                'div[class*="overlay"] [role="option"]',
+                'div[class*="modal"] [role="option"]',
+                'div[class*="modal"] label',
+            ];
+
+            let flairPicked = false;
+            for (const sel of modalFlairSelectors) {
+                try {
+                    const options = page.locator(sel);
+                    const count = await options.count();
+                    if (count > 0) {
+                        // Pick option 2 if available (option 1 might be "None")
+                        const idx = count > 1 ? 1 : 0;
+                        await options.nth(idx).click();
+                        flairPicked = true;
+                        console.log(`    ✅ Flair picked in modal (option ${idx + 1} of ${count}) via: ${sel}`);
+                        await page.waitForTimeout(1000);
+                        break;
+                    }
+                } catch { continue; }
+            }
+
+            // If selectors didn't work, try JS click inside modal
+            if (!flairPicked) {
+                const jsResult = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"]');
+                    for (const modal of modals) {
+                        if ((modal as HTMLElement).offsetHeight === 0) continue;
+                        // Find any clickable option-like element
+                        const clickables = modal.querySelectorAll('li, label, [role="option"], [role="radio"], button');
+                        for (const el of clickables) {
+                            const text = (el.textContent || '').trim();
+                            if (text.length > 0 && text.length < 50 && !(el as HTMLElement).querySelector('input[type="text"]')) {
+                                (el as HTMLElement).click();
+                                return `JS modal click: "${text.substring(0, 20)}"`;
+                            }
+                        }
+                    }
+                    return null;
+                }).catch(() => null);
+
+                if (jsResult) {
+                    flairPicked = true;
+                    console.log(`    ✅ ${jsResult}`);
+                    await page.waitForTimeout(1000);
+                }
+            }
+
+            if (flairPicked) {
+                // Click Apply/Save/Done button inside modal
+                const applySelectors = [
+                    'dialog button:has-text("Apply")',
+                    'dialog button:has-text("Save")',
+                    'dialog button:has-text("Done")',
+                    'dialog button:has-text("Aplicar")',
+                    'dialog button:has-text("Salvar")',
+                    '[role="dialog"] button:has-text("Apply")',
+                    '[role="dialog"] button:has-text("Save")',
+                    '[role="dialog"] button:has-text("Done")',
+                    '[role="dialog"] button[type="submit"]',
+                ];
+
+                for (const applySel of applySelectors) {
+                    try {
+                        const applyBtn = page.locator(applySel).first();
+                        if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                            await applyBtn.click();
+                            console.log(`    ✅ Flair applied via: ${applySel}`);
+                            await page.waitForTimeout(1500);
+                            break;
+                        }
+                    } catch { continue; }
+                }
+
+                // Now re-click the Post button
+                console.log('  🔄 Re-clicking Post after flair selection...');
+                for (const sel of submitSelectors) {
+                    try {
+                        const btn = page.locator(sel).first();
+                        if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                            const isDisabled = await btn.isDisabled().catch(() => false);
+                            if (!isDisabled) {
+                                await btn.click({ timeout: 5000 });
+                                submitted = true;
+                                console.log(`  ✅ Re-submitted via: ${sel}`);
+                                break;
+                            }
+                        }
+                    } catch { continue; }
+                }
+            }
+        }
+    } catch (err) {
+        console.log('  ℹ️ Flair modal check error:', err instanceof Error ? err.message.substring(0, 50) : '');
+    }
+
     // ======== Handle NSFW confirmation modal ========
     // Reddit shows a modal warning about NSFW content after clicking Post
     // We need to confirm it to actually submit
