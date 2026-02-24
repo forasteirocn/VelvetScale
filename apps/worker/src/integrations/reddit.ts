@@ -590,6 +590,90 @@ async function tryNewRedditSubmit(
         return { submitted: false, error: 'login_required' };
     }
 
+    // ======== CHECK FOR MODALS / ERRORS ========
+    // Detect private/restricted community, banned, or other blocking modals
+    console.log('🔍 Checking for blocking modals...');
+    const pageText = await page.textContent('body').catch(() => '') || '';
+    const pageTextLower = pageText.toLowerCase();
+
+    const blockingPatterns = [
+        { pattern: 'comunidade é privada', error: 'private_community' },
+        { pattern: 'community is private', error: 'private_community' },
+        { pattern: 'this community is private', error: 'private_community' },
+        { pattern: 'apenas os membros aprovados', error: 'private_community' },
+        { pattern: 'only approved members', error: 'private_community' },
+        { pattern: 'comunidade é restrita', error: 'restricted_community' },
+        { pattern: 'community is restricted', error: 'restricted_community' },
+        { pattern: 'you are banned', error: 'banned_from_sub' },
+        { pattern: 'you have been banned', error: 'banned_from_sub' },
+        { pattern: 'you aren\'t allowed to post', error: 'not_allowed' },
+        { pattern: 'you aren\'t eligible to post', error: 'not_allowed' },
+        { pattern: 'pedir para aderir', error: 'private_community' },
+        { pattern: 'request to join', error: 'private_community' },
+    ];
+
+    for (const { pattern, error } of blockingPatterns) {
+        if (pageTextLower.includes(pattern)) {
+            console.log(`  🚫 Blocked: ${error} (detected "${pattern}")`);
+
+            // Auto-ban this sub to prevent future attempts
+            try {
+                const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
+                await supabase
+                    .from('subreddits')
+                    .update({ is_banned: true })
+                    .eq('name', subreddit);
+                console.log(`  🛡️ Auto-banned r/${subreddit} in DB`);
+            } catch { /* ignore DB errors */ }
+
+            return { submitted: false, error: `r/${subreddit}: ${error}` };
+        }
+    }
+
+    // Also check for modal dialogs (Reddit uses various modal components)
+    const modalSelectors = [
+        'div[role="dialog"]',
+        'div[class*="modal"]',
+        'shreddit-modal',
+        '[data-testid="modal"]',
+    ];
+
+    for (const sel of modalSelectors) {
+        try {
+            const modal = page.locator(sel).first();
+            if (await modal.isVisible({ timeout: 1000 }).catch(() => false)) {
+                const modalText = await modal.textContent().catch(() => '') || '';
+                const modalLower = modalText.toLowerCase();
+
+                // Check if modal contains blocking content
+                if (modalLower.includes('privad') || modalLower.includes('private') ||
+                    modalLower.includes('restri') || modalLower.includes('banned') ||
+                    modalLower.includes('aderir') || modalLower.includes('join')) {
+                    console.log(`  🚫 Blocking modal detected: "${modalText.substring(0, 100)}"`);
+
+                    // Close modal and return
+                    const closeBtn = modal.locator('button:has-text("Ir para"), button:has-text("Go"), button:has-text("Close"), button[aria-label="close"]').first();
+                    if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        await closeBtn.click();
+                    }
+
+                    // Auto-ban
+                    try {
+                        const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
+                        await supabase
+                            .from('subreddits')
+                            .update({ is_banned: true })
+                            .eq('name', subreddit);
+                    } catch { /* ignore */ }
+
+                    return { submitted: false, error: `r/${subreddit}: private or restricted community` };
+                }
+            }
+        } catch { continue; }
+    }
+
+    console.log('  ✅ No blocking modals detected');
+
     // Switch to "Images & Video" tab
     console.log('📷 Selecionando aba de imagem...');
     const imageTabSelectors = [
