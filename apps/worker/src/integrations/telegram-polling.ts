@@ -131,6 +131,9 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 `/fila\n` +
                 `→ Mostra posts na fila de espera\n\n` +
 
+                `📅 Foto + /piloto na legenda\n` +
+                `→ Modo piloto: envie várias fotos e IA cria calendário semanal\n\n` +
+
                 `Estatísticas\n` +
                 `→ Mostra quantos posts foram feitos\n\n` +
 
@@ -334,7 +337,7 @@ async function handleTextMessage(update: TelegramUpdate): Promise<void> {
 }
 
 /**
- * Handle a photo message — /postar = immediate, otherwise schedules
+ * Handle a photo message — /postar = immediate, /piloto = batch calendar, otherwise schedules
  */
 async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const msg = update.message!;
@@ -342,12 +345,17 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const rawCaption = msg.caption || '';
     const telegramId = msg.from.id.toString();
     const isImmediate = rawCaption.toLowerCase().startsWith('/postar');
-    const caption = isImmediate ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥' : rawCaption || '🔥';
+    const isPiloto = rawCaption.toLowerCase().startsWith('/piloto');
+    const caption = isImmediate
+        ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥'
+        : isPiloto
+            ? rawCaption.replace(/^\/piloto\s*/i, '').trim() || '🔥'
+            : rawCaption || '🔥';
 
     // Get highest resolution photo
     const bestPhoto = msg.photo![msg.photo!.length - 1];
 
-    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : 'agendado'})`);
+    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : isPiloto ? 'PILOTO' : 'agendado'})`);
 
     await sendTypingAction(chatId);
 
@@ -376,7 +384,13 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
         return;
     }
 
-    if (isImmediate) {
+    // Check if model is in batch/piloto mode
+    const { isInBatchMode, addPhotoToBatch } = await import('../calendar');
+
+    if (isPiloto || isInBatchMode(model.id)) {
+        // === AUTONOMOUS CALENDAR MODE ===
+        await addPhotoToBatch(model.id, chatId, photoUrl, caption, bestPhoto.file_id);
+    } else if (isImmediate) {
         // === INTELLIGENT IMMEDIATE POST ===
         const { intelligentImmediatePost } = await import('../strategy');
         await intelligentImmediatePost(model.id, photoUrl, caption, chatId);

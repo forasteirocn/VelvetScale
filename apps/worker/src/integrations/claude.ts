@@ -519,3 +519,78 @@ Respond with just the reply text, no JSON.`,
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
     return text.trim();
 }
+
+// =============================================
+// A/B Title Testing
+// Generate multiple title variations to test
+// =============================================
+
+export interface TitleVariant {
+    title: string;
+    style: 'curiosity' | 'humor' | 'direct' | 'question' | 'emotional';
+    confidence: number; // 0-100
+}
+
+/**
+ * Generate 3 title variations for A/B testing
+ * Each uses a different psychological angle
+ */
+export async function generateABTitles(
+    caption: string,
+    subreddit: string,
+    modelBio: string,
+    persona: string,
+    imageAnalysis?: ImageAnalysis | null
+): Promise<TitleVariant[]> {
+    const visualContext = imageAnalysis
+        ? `\nPhoto: ${imageAnalysis.description} (${imageAnalysis.setting}, ${imageAnalysis.outfit}, ${imageAnalysis.mood})`
+        : '';
+
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 400,
+            system: `Generate exactly 3 title variations for a Reddit photo post, each with a different strategy.
+Each title should feel natural for r/${subreddit}.
+${persona ? `Persona: ${persona}` : ''}
+
+STRATEGIES:
+1. "curiosity" — Make them curious to see the photo (e.g. "What do you think of my new look?")
+2. "humor" — Light humor or playfulness (e.g. "My cat judges me when I take selfies 😂")
+3. "emotional" — Create connection (e.g. "Finally feeling confident ❤️")
+
+RULES:
+- Never include links, promotions, or call-to-actions
+- Under 100 characters each
+- Write in English
+- Match the sub's culture
+
+Respond with ONLY valid JSON array:
+[
+  {"title": "...", "style": "curiosity", "confidence": 80},
+  {"title": "...", "style": "humor", "confidence": 70},
+  {"title": "...", "style": "emotional", "confidence": 75}
+]`,
+            messages: [{
+                role: 'user',
+                content: `Caption: "${caption}"
+Subreddit: r/${subreddit}
+Bio: ${modelBio}${visualContext}
+
+Generate 3 title variations.`,
+            }],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            const variants = JSON.parse(jsonMatch[0]) as TitleVariant[];
+            return variants.filter(v => v.title && v.style);
+        }
+    } catch (err) {
+        console.error('⚠️ A/B title generation error:', err instanceof Error ? err.message : err);
+    }
+
+    // Fallback: return single title
+    return [{ title: caption, style: 'direct', confidence: 50 }];
+}

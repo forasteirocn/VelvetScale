@@ -238,14 +238,101 @@ async function postKarmaComment(
     postUrl: string,
     commentText: string
 ): Promise<boolean> {
+    let context: any = null;
+    let page: any = null;
+
     try {
-        // Get browser context for model
         const reddit = await import('./integrations/reddit');
-        // TODO: implement full Playwright comment posting
-        // For now, log the intent
-        console.log(`    📝 Karma comment on ${postUrl}: "${commentText.substring(0, 60)}..."`);
-        return true; // Placeholder
-    } catch {
+
+        // Use submitRedditPost's internal approach: get context, navigate, comment
+        // We use a lightweight approach: navigate to post, find comment box, type, submit
+        const { chromium } = await import('playwright');
+
+        // Reuse saved cookies
+        const path = await import('path');
+        const fs = await import('fs');
+        const cookiePath = path.join(process.cwd(), '.reddit-sessions', `${modelId}.json`);
+
+        if (!fs.existsSync(cookiePath)) {
+            console.log(`    ⚠️ No session for ${modelId}, skipping karma comment`);
+            return false;
+        }
+
+        // Launch a temporary browser for this comment
+        const br = await chromium.launch({
+            headless: false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        });
+
+        context = await br.newContext({
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            viewport: { width: 1280, height: 800 },
+        });
+
+        const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
+        await context.addCookies(cookies);
+
+        page = await context.newPage();
+        await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(3000);
+
+        // Try to find and use the comment box
+        const commentSelectors = [
+            'div[contenteditable="true"]',
+            'textarea[placeholder*="comment" i]',
+            'textarea[placeholder*="thought" i]',
+            'shreddit-composer textarea',
+            '[data-test-id="comment-submission-form-richtext"] div[contenteditable]',
+        ];
+
+        let commented = false;
+        for (const sel of commentSelectors) {
+            try {
+                const commentBox = page.locator(sel).first();
+                if (await commentBox.isVisible({ timeout: 3000 }).catch(() => false)) {
+                    await commentBox.click();
+                    await page.waitForTimeout(500);
+                    await commentBox.fill(commentText);
+                    await page.waitForTimeout(1000);
+
+                    // Find and click submit button
+                    const submitSelectors = [
+                        'button:has-text("Comment")',
+                        'button:has-text("Reply")',
+                        'button:has-text("Comentar")',
+                        'button[type="submit"]',
+                    ];
+
+                    for (const submitSel of submitSelectors) {
+                        const submitBtn = page.locator(submitSel).first();
+                        if (await submitBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                            const isDisabled = await submitBtn.isDisabled().catch(() => false);
+                            if (!isDisabled) {
+                                await submitBtn.click();
+                                commented = true;
+                                console.log(`    ✅ Karma comment posted in ${postUrl.substring(0, 60)}`);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (commented) break;
+                }
+            } catch { continue; }
+        }
+
+        await page.waitForTimeout(2000);
+
+        if (!commented) {
+            console.log(`    ⚠️ Could not find comment box on ${postUrl.substring(0, 60)}`);
+        }
+
+        return commented;
+    } catch (err) {
+        console.error(`    ❌ Karma comment error:`, err instanceof Error ? err.message : err);
         return false;
+    } finally {
+        if (page) await page.close().catch(() => { });
+        if (context) await context.close().catch(() => { });
     }
 }

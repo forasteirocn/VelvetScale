@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
-import { improveCaption, pickBestSubForCaption, analyzeImage, type ImageAnalysis } from './integrations/claude';
+import { improveCaption, pickBestSubForCaption, analyzeImage, generateABTitles, type ImageAnalysis } from './integrations/claude';
 import { validatePostBeforeSubmit } from './anti-ban';
 import { getLearningSummary, type LearningSummary } from './learning';
 import Anthropic from '@anthropic-ai/sdk';
@@ -143,21 +143,43 @@ export async function analyzeAndSchedule(
         // Schedule each post from the strategy
         const scheduledPosts: Array<{ sub: string; time: Date; title: string; reason: string }> = [];
 
-        for (const plan of strategy) {
-            // Improve caption specifically for this sub
-            let title = plan.title;
+        // Generate A/B title variants if posting to multiple subs
+        let titleVariants: Array<{ title: string; style: string }> = [];
+        if (strategy.length > 1) {
             try {
-                const improved = await improveCaption(
+                const abTitles = await generateABTitles(
                     photo.caption || '🔥',
-                    plan.subreddit,
+                    strategy[0].subreddit,
                     model.bio || '',
                     model.persona || '',
-                    { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
                     imageAnalysis
                 );
-                title = improved.title;
-            } catch {
-                // Use Claude's strategy title as fallback
+                titleVariants = abTitles;
+                console.log(`  🎯 A/B titles: ${abTitles.map(t => `"${t.title}" (${t.style})`).join(', ')}`);
+            } catch { /* fall back to single caption */ }
+        }
+
+        for (let planIndex = 0; planIndex < strategy.length; planIndex++) {
+            const plan = strategy[planIndex];
+
+            // Use A/B variant if available, otherwise improve caption
+            let title = plan.title;
+            let titleStyle = 'default';
+            if (titleVariants.length > planIndex) {
+                title = titleVariants[planIndex].title;
+                titleStyle = titleVariants[planIndex].style;
+            } else {
+                try {
+                    const improved = await improveCaption(
+                        photo.caption || '🔥',
+                        plan.subreddit,
+                        model.bio || '',
+                        model.persona || '',
+                        { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                        imageAnalysis
+                    );
+                    title = improved.title;
+                } catch { /* Use Claude's strategy title as fallback */ }
             }
 
             const { data: post } = await supabase
