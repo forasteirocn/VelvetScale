@@ -1,6 +1,8 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
 import { improveCaption, pickBestSubForCaption, analyzeImage, type ImageAnalysis } from './integrations/claude';
+import { validatePostBeforeSubmit } from './anti-ban';
+import { getLearningSummary, type LearningSummary } from './learning';
 import Anthropic from '@anthropic-ai/sdk';
 
 // =============================================
@@ -233,6 +235,11 @@ async function getPostingStrategy(
         .sort((a, b) => (b.engagementScore + b.avgUpvotes) - (a.engagementScore + a.avgUpvotes))
         .slice(0, 40);
 
+    // Get learning context
+    let learningContext = '';
+    // We get modelId from the first sub's model context (available in caller)
+    // For now we build context from available data
+
     const subsReport = candidates.map(s =>
         `- r/${s.name}: ${s.totalPosts} posts, avg ${s.avgUpvotes} upvotes, ${s.postsRemoved} removidos, último post: ${s.lastPosted}, ${s.memberCount > 0 ? s.memberCount + ' membros' : 'membros desconhecidos'}`
     ).join('\n');
@@ -394,6 +401,17 @@ export async function intelligentImmediatePost(
         return `- r/${s.name}: engagement ${s.engagement_score || 0}, avg upvotes ${perf?.avg_upvotes || 0}, removidos ${perf?.posts_removed || 0}`;
     }).join('\n');
 
+    // Get learning context for smarter decisions
+    const learning = await getLearningSummary(modelId);
+    const learningContext = learning ? `
+
+HISTORICAL PERFORMANCE DATA (learn from this):
+- Top subs: ${learning.topSubs.map(s => `r/${s.name} (avg ${s.avgUpvotes} upvotes)`).join(', ')}
+- Avoid subs: ${learning.worstSubs.map(s => `r/${s.name} (${Math.round(s.removalRate * 100)}% removal rate)`).join(', ') || 'none'}
+- Best hours (UTC): ${learning.bestHours.join(', ') || 'no data yet'}
+- Top titles: ${learning.titlePatterns.highPerformers.slice(0, 3).map(t => `"${t}"`).join(', ') || 'no data'}
+- Overall: ${learning.overallStats.totalPosts} posts, avg ${learning.overallStats.avgUpvotes} upvotes` : '';
+
     await sendTelegramMessage(chatId, '🧠 Analisando melhor sub para sua foto...');
 
     // Analyze the image with Claude Vision
@@ -413,6 +431,7 @@ export async function intelligentImmediatePost(
             system: `Pick the single BEST subreddit for this photo post.
 Consider: ${imageAnalysis ? 'the PHOTO ANALYSIS (most important), ' : ''}caption vibe, subreddit culture fit, historical performance.
 ${imageAnalysis ? 'Match the photo\'s visual characteristics to the subreddit\'s niche.' : ''}
+${learningContext ? 'Use the HISTORICAL PERFORMANCE DATA to prefer subs that perform well and avoid subs with high removal rates.' : ''}
 Respond with ONLY the subreddit name. No "r/", no explanation.`,
             messages: [{
                 role: 'user',
@@ -421,7 +440,7 @@ Respond with ONLY the subreddit name. No "r/", no explanation.`,
 Available subs with performance data:
 ${subInfo}${imageAnalysis
                         ? `\n\nPhoto analysis:\n- Setting: ${imageAnalysis.setting}\n- Outfit: ${imageAnalysis.outfit}\n- Mood: ${imageAnalysis.mood}\n- Features: ${imageAnalysis.bodyFeatures.join(', ')}\n- Niches: ${imageAnalysis.suggestedNiches.join(', ')}\n- Description: ${imageAnalysis.description}`
-                        : ''}
+                        : ''}${learningContext}
 
 Which ONE sub is the best match?`,
             }],
@@ -453,6 +472,21 @@ Which ONE sub is the best match?`,
         );
         title = improved.title;
     } catch { /* use original */ }
+
+    // Validate post against sub rules before submitting
+    console.log(`🛡️ Validando post para r/${targetSub}...`);
+    const validation = await validatePostBeforeSubmit(targetSub, title, true, modelId);
+
+    if (!validation.isOk) {
+        const blockerMsg = validation.blockers.join(', ');
+        console.log(`  🚫 Post blocked: ${blockerMsg}`);
+        await sendTelegramMessage(chatId, `⚠️ Post bloqueado para r/${safeSub}: ${blockerMsg}\nTente outro sub.`);
+        return;
+    }
+
+    if (validation.warnings.length > 0) {
+        console.log(`  ⚠️ Warnings: ${validation.warnings.join(', ')}`);
+    }
 
     // Post via Playwright
     const { submitRedditImagePost } = await import('./integrations/reddit');

@@ -10,6 +10,8 @@ import { startScheduler, stopScheduler } from './scheduler';
 import { startEngagementManager, stopEngagementManager } from './engagement';
 import { startKarmaBuilder, stopKarmaBuilder } from './karma';
 import { startSubDiscovery, stopSubDiscovery } from './discovery-smart';
+import { startAntiBanMonitor, stopAntiBanMonitor } from './anti-ban';
+import { startLearningEngine, stopLearningEngine } from './learning';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -42,6 +44,8 @@ async function main() {
         startEngagementManager();  // Responde comentários (30 min)
         startKarmaBuilder();       // Constrói karma (2h)
         startSubDiscovery();       // Descobre subs (24h)
+        startAntiBanMonitor();     // Detecta posts removidos (1h)
+        startLearningEngine();     // Aprende com resultados (24h)
 
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);
@@ -62,6 +66,8 @@ process.on('SIGINT', async () => {
     stopEngagementManager();
     stopKarmaBuilder();
     stopSubDiscovery();
+    stopAntiBanMonitor();
+    stopLearningEngine();
     await closeBrowser();
     process.exit(0);
 });
@@ -72,6 +78,8 @@ process.on('SIGTERM', async () => {
     stopEngagementManager();
     stopKarmaBuilder();
     stopSubDiscovery();
+    stopAntiBanMonitor();
+    stopLearningEngine();
     await closeBrowser();
     process.exit(0);
 });
