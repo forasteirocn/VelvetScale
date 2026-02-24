@@ -17,7 +17,7 @@ const photoBatches: Map<string, {
     timer: ReturnType<typeof setTimeout>;
 }> = new Map();
 
-const BATCH_WAIT_MS = 30_000; // Wait 30s after last photo for batch to "close"
+const BATCH_WAIT_MS = 60_000; // Wait 60s after last photo for batch to "close"
 const MAX_POSTS_PER_DAY = 4;
 const MIN_HOURS_BETWEEN_POSTS = 4;
 
@@ -44,7 +44,9 @@ export async function addPhotoToBatch(
 
         const count = batch.photos.length;
         if (count <= 5) {
-            await sendTelegramMessage(chatId, `📷 Foto ${count} recebida! Envie mais ou aguarde 30s para criar o calendário.`);
+            await sendTelegramMessage(chatId, `📷 Foto ${count} recebida! Envie mais ou aguarde 1 min para criar o calendário.`);
+        } else if (count === 28) {
+            await sendTelegramMessage(chatId, `📷 Foto ${count} recebida! Você já tem fotos pra 7 dias completos (4/dia). Pode enviar mais se quiser.`);
         }
     } else {
         const timer = setTimeout(() => processBatch(key), BATCH_WAIT_MS);
@@ -57,7 +59,7 @@ export async function addPhotoToBatch(
 
         await sendTelegramMessage(chatId,
             `📅 *Modo Piloto Automático ativado!*\n\n` +
-            `Envie todas as fotos que quiser nos próximos 30 segundos.\n` +
+            `Envie todas as fotos que quiser no próximo 1 minuto.\n` +
             `Depois que parar, eu crio um calendário semanal completo.\n\n` +
             `📷 Foto 1 recebida!`
         );
