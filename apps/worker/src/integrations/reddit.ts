@@ -1182,6 +1182,40 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
 
     await trySelectFlairWithVision();
 
+    // After flair modal, scroll back to form and verify image is still uploaded
+    console.log('🔍 Verifying image upload after flair...');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(1000);
+
+    const imageStillUploaded = await page.evaluate(() => {
+        return !!document.querySelector('img[src*="redditmedia"], img[src*="reddit"], img[src*="preview"], [data-testid="post-image"]');
+    });
+
+    if (!imageStillUploaded) {
+        console.log('  ⚠️ Image lost after flair! Re-uploading...');
+        try {
+            const fileInput = await page.locator('input[type="file"]').first();
+            if (await fileInput.count() > 0) {
+                await fileInput.setInputFiles(tempImagePath);
+                await page.waitForTimeout(5000);
+                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
+
+                const reUploaded = await page.evaluate(() => {
+                    return !!document.querySelector('img[src*="redditmedia"], img[src*="reddit"], img[src*="preview"]');
+                });
+                console.log(reUploaded ? '  ✅ Image re-uploaded successfully' : '  ❌ Image re-upload may have failed');
+            }
+        } catch (err) {
+            console.log('  ⚠️ Re-upload error:', err instanceof Error ? err.message.substring(0, 50) : '');
+        }
+    } else {
+        console.log('  ✅ Image still uploaded');
+    }
+
+    // Scroll to bottom to ensure submit button is visible
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(500);
+
     // Debug screenshot before submit
     const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
     await page.screenshot({ path: debugPath, fullPage: true });

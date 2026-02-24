@@ -717,7 +717,7 @@ export async function askClaudeWhatToClick(
     question: string
 ): Promise<VisionClickResult> {
     try {
-        const screenshot = await page.screenshot({ type: 'png', fullPage: false });
+        const screenshot = await page.screenshot({ type: 'png', fullPage: true });
         const base64 = screenshot.toString('base64');
         return await analyzeScreenshot(base64, question);
     } catch (err) {
