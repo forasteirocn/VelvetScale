@@ -25,6 +25,22 @@ export async function sendTelegramMessage(chatId: string | number, message: stri
         });
         return true;
     } catch (error: unknown) {
+        // If Markdown parsing fails (400), retry without parse_mode
+        const isAxiosError = error && typeof error === 'object' && 'response' in error;
+        const status = isAxiosError ? (error as { response?: { status?: number } }).response?.status : undefined;
+        if (status === 400) {
+            try {
+                await axios.post(`${getBotUrl()}/sendMessage`, {
+                    chat_id: chatId,
+                    text: message,
+                });
+                return true;
+            } catch (retryError: unknown) {
+                const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+                console.error('❌ Telegram send error (retry):', retryMsg);
+                return false;
+            }
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('❌ Telegram send error:', errMsg);
         return false;

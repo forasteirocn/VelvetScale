@@ -476,6 +476,12 @@ export async function submitRedditPost(
 /**
  * Submit an image post to a subreddit via browser
  * Downloads the image first, then uploads it to Reddit
+ * 
+ * Uses 4 layers of resilience:
+ *  1. Better upload detection (wait for image preview)
+ *  2. Longer submit wait + blur/focus validation triggers (30s)
+ *  3. Force-enable disabled button as last resort
+ *  4. Old Reddit fallback (simple HTML form)
  */
 export async function submitRedditImagePost(
     modelId: string,
@@ -496,300 +502,65 @@ export async function submitRedditImagePost(
         context = await getModelContext(modelId);
         const page = await context.newPage();
 
-        // Navigate to subreddit submission page
-        await page.goto(`https://www.reddit.com/r/${subreddit}/submit`, { waitUntil: 'commit', timeout: 60000 });
-        await page.waitForTimeout(randomDelay(3000, 5000));
+        // Try new Reddit first, fall back to old Reddit if submit fails
+        const result = await tryNewRedditSubmit(page, subreddit, title, tempImagePath, isNsfw);
 
-        // Check if logged in
-        if (page.url().includes('login')) {
+        if (result.submitted) {
+            // Success on new Reddit
+            fs.unlinkSync(tempImagePath);
+
+            const supabase = getSupabaseAdmin();
+            await supabase.from('posts').insert({
+                model_id: modelId,
+                platform: 'reddit',
+                post_type: 'image',
+                content: title,
+                subreddit,
+                external_url: result.url,
+                status: 'published',
+                published_at: new Date().toISOString(),
+                metadata: { image_url: imageUrl },
+            });
+
+            await saveSession(modelId, context);
+            await page.close();
+            return { success: true, url: result.url };
+        }
+
+        if (result.error === 'login_required') {
             fs.unlinkSync(tempImagePath);
             await page.close();
-            await context.close();
             return { success: false, error: 'Session expired — need to login again' };
         }
 
-        // Switch to "Images & Video" tab
-        console.log('📷 Selecionando aba de imagem...');
-        const imageTabSelectors = [
-            'button[role="tab"][data-select-value="IMAGE"]',
-            'faceplate-tab[panel-id="IMAGE"]',
-            'button:has-text("Images")',
-            'button:has-text("Imagens")',
-        ];
-        for (const sel of imageTabSelectors) {
-            try {
-                const tab = page.locator(sel).first();
-                if (await tab.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await tab.click();
-                    console.log(`  ✅ Image tab: ${sel}`);
-                    break;
-                }
-            } catch { continue; }
-        }
-        await page.waitForTimeout(1000);
+        // ========== FALLBACK: Old Reddit ==========
+        console.log('🔄 Tentando old.reddit.com como fallback...');
+        const oldResult = await tryOldRedditSubmit(page, subreddit, title, tempImagePath, isNsfw);
 
-        // Upload image via file input
-        console.log('📤 Uploading imagem...');
-        const fileInput = page.locator('input[type="file"]').first();
-        await fileInput.setInputFiles(tempImagePath);
-
-        // Wait for image to finish uploading
-        console.log('  ⏳ Aguardando upload...');
-        await page.waitForTimeout(5000);
-        for (let i = 0; i < 10; i++) {
-            const uploading = await page.locator('[class*="upload"], [class*="progress"], [class*="loading"], [class*="spinner"]').isVisible({ timeout: 1000 }).catch(() => false);
-            if (!uploading) break;
-            await page.waitForTimeout(2000);
-            console.log(`  ⏳ Upload em progresso... (${i + 1})`);
-        }
-
-        // Fill title — try multiple selectors
-        console.log('📝 Preenchendo título...');
-        const titleSelectors = [
-            'textarea[slot="title"]',
-            'textarea[name="title"]',
-            'textarea[placeholder*="Title"]',
-            'textarea[placeholder*="Título"]',
-            'input[placeholder*="Title"]',
-            '[data-test-id="post-title"] textarea',
-            'div[contenteditable="true"]',
-        ];
-        let titleFilled = false;
-        for (const sel of titleSelectors) {
-            try {
-                const input = page.locator(sel).first();
-                if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await input.click();
-                    await input.fill(title);
-                    titleFilled = true;
-                    console.log(`  ✅ Title filled via: ${sel}`);
-                    break;
-                }
-            } catch { continue; }
-        }
-        if (!titleFilled) {
-            console.log('  ⚠️ Could not find title input, trying keyboard approach...');
-            // Fallback: try to type in the focused element
-            await page.keyboard.press('Tab');
-            await page.keyboard.type(title, { delay: 30 });
-        }
-        await page.waitForTimeout(1000);
-
-        // Mark NSFW
-        if (isNsfw) {
-            console.log('🔞 Marcando NSFW...');
-            const nsfwSelectors = [
-                'button:has-text("NSFW")',
-                'faceplate-switch[input-name="nsfw"]',
-                'button[aria-label*="NSFW"]',
-                'button[aria-label*="nsfw"]',
-            ];
-            for (const sel of nsfwSelectors) {
-                try {
-                    const btn = page.locator(sel).first();
-                    if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                        await btn.click();
-                        console.log(`  ✅ NSFW via: ${sel}`);
-                        break;
-                    }
-                } catch { continue; }
-            }
-        }
-
-        // Try to set flair if needed (some subs require it)
-        console.log('🏷️ Verificando flair...');
-        const flairSelectors = [
-            'button[aria-label*="flair" i]',
-            'button[aria-label*="Add flair"]',
-            'button:has-text("Add flair")',
-            'button:has-text("Flair")',
-        ];
-        for (const sel of flairSelectors) {
-            try {
-                const flairBtn = page.locator(sel).first();
-                if (await flairBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await flairBtn.click();
-                    await page.waitForTimeout(1500);
-                    // Click first flair option
-                    const firstFlair = page.locator('[role="option"], [role="menuitemradio"], .flair-option').first();
-                    if (await firstFlair.isVisible({ timeout: 2000 }).catch(() => false)) {
-                        await firstFlair.click();
-                        console.log('  ✅ Flair selected');
-                        await page.waitForTimeout(1000);
-                        // Click "Apply" if there's a confirm button
-                        const applyBtn = page.locator('button:has-text("Apply"), button:has-text("Aplicar"), button:has-text("Done")').first();
-                        if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-                            await applyBtn.click();
-                        }
-                    }
-                    break;
-                }
-            } catch { continue; }
-        }
-        await page.waitForTimeout(1000);
-
-        // Debug screenshot before submit
-        const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
-        await page.screenshot({ path: debugPath, fullPage: true });
-        console.log(`📸 Debug screenshot: ${debugPath}`);
-
-        // Log all buttons for debugging
-        const buttonsInfo = await page.evaluate(() => {
-            return Array.from(document.querySelectorAll('button')).map(b => ({
-                text: b.textContent?.trim()?.substring(0, 50),
-                type: b.type,
-                disabled: b.disabled,
-                ariaLabel: b.getAttribute('aria-label'),
-            })).filter(b => b.text && b.text.length > 0);
-        });
-        console.log('  📋 Buttons on page:', JSON.stringify(buttonsInfo.slice(0, 15)));
-
-        // Wait for submit button to become enabled
-        console.log('🚀 Procurando botão de submit...');
-        let submitted = false;
-
-        // Approach 1: Find submit button and wait for it to be enabled
-        const submitSelectors = [
-            'shreddit-composer button[type="submit"]',
-            'button[type="submit"]',
-            'button:has-text("Post")',
-            'button:has-text("Publicar")',
-            'button:has-text("Submit")',
-        ];
-
-        for (const sel of submitSelectors) {
-            try {
-                const btn = page.locator(sel).first();
-                if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    // Wait up to 10s for button to become enabled
-                    const isDisabled = await btn.isDisabled().catch(() => false);
-                    if (isDisabled) {
-                        console.log(`  ⏳ Submit button found (${sel}) but disabled, waiting...`);
-                        try {
-                            await btn.waitFor({ state: 'attached', timeout: 10000 });
-                            // Poll for enabled state
-                            for (let i = 0; i < 10; i++) {
-                                if (!(await btn.isDisabled().catch(() => true))) break;
-                                await page.waitForTimeout(1000);
-                            }
-                        } catch { /* proceed anyway */ }
-                    }
-
-                    const stillDisabled = await btn.isDisabled().catch(() => false);
-                    if (!stillDisabled) {
-                        await btn.click({ timeout: 10000 });
-                        submitted = true;
-                        console.log(`  ✅ Submit via: ${sel}`);
-                        break;
-                    } else {
-                        console.log(`  ⚠️ Button still disabled: ${sel}`);
-                    }
-                }
-            } catch (e) {
-                console.log(`  ⚠️ ${sel} failed:`, e instanceof Error ? e.message.substring(0, 100) : '');
-                continue;
-            }
-        }
-
-        // Approach 2: Force click via JS if normal click failed
-        if (!submitted) {
-            console.log('  🔄 Trying JS click...');
-            try {
-                const jsResult = await page.evaluate(() => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const submit = buttons.find(b => {
-                        const text = b.textContent?.trim().toLowerCase() || '';
-                        return (text === 'post' || text === 'publicar' || text === 'submit') &&
-                            b.type === 'submit';
-                    });
-                    if (submit && !submit.disabled) {
-                        submit.click();
-                        return 'clicked';
-                    }
-                    if (submit && submit.disabled) {
-                        return `disabled: ${submit.textContent?.trim()}`;
-                    }
-                    return 'not found';
-                });
-                console.log(`  JS result: ${jsResult}`);
-                if (jsResult === 'clicked') submitted = true;
-            } catch (e) {
-                console.error('  ❌ JS submit failed:', e);
-            }
-        }
-
-        // Approach 3: If button is disabled, there might be a validation error
-        if (!submitted) {
-            const errorText = await page.evaluate(() => {
-                const errors = document.querySelectorAll('[class*="error" i], [class*="Error"], [role="alert"]');
-                return Array.from(errors).map(e => e.textContent?.trim()).filter(Boolean).join('; ');
-            });
-            if (errorText) {
-                console.log(`  ❌ Form errors: ${errorText}`);
-            }
-        }
-
-        await page.waitForTimeout(3000);
-
-        // Wait for URL to change from submit page to actual post
-        let postUrl = page.url();
-        const isStillOnSubmit = (url: string) => url.includes('/submit');
-
-        if (isStillOnSubmit(postUrl)) {
-            console.log('  ⏳ Waiting for redirect after submit...');
-            try {
-                // Wait up to 30s for navigation away from submit page
-                await page.waitForURL((url) => !url.toString().includes('/submit'), { timeout: 30000 });
-                postUrl = page.url();
-                console.log(`  ✅ Redirected to: ${postUrl}`);
-            } catch {
-                // Take a screenshot to see what happened
-                const afterPath = path.join(COOKIES_DIR, `debug_after_submit_${Date.now()}.png`);
-                await page.screenshot({ path: afterPath });
-                console.log(`  ⚠️ No redirect after 30s. Screenshot: ${afterPath}`);
-                console.log(`  Current URL: ${page.url()}`);
-
-                // Check if there's an error message on the page
-                const errorText = await page.locator('[class*="error"], [class*="Error"], .banner-message').textContent().catch(() => '');
-                if (errorText) {
-                    console.log(`  ❌ Error on page: ${errorText}`);
-                }
-                postUrl = page.url();
-            }
-        }
-
-        await page.waitForTimeout(2000);
-
-        // Verify if post was actually created
-        const postSuccess = postUrl.includes('/comments/') || postUrl.includes('/r/') && !postUrl.includes('/submit');
-
-        // Delete temp image
         fs.unlinkSync(tempImagePath);
 
-        if (!postSuccess) {
+        if (oldResult.submitted) {
+            const supabase = getSupabaseAdmin();
+            await supabase.from('posts').insert({
+                model_id: modelId,
+                platform: 'reddit',
+                post_type: 'image',
+                content: title,
+                subreddit,
+                external_url: oldResult.url,
+                status: 'published',
+                published_at: new Date().toISOString(),
+                metadata: { image_url: imageUrl },
+            });
+
             await saveSession(modelId, context);
             await page.close();
-            return { success: false, error: 'Post may not have been submitted — URL did not change from submit page. Check debug screenshot.' };
+            return { success: true, url: oldResult.url };
         }
-
-        // Save to database only if post was actually created
-        const supabase = getSupabaseAdmin();
-        await supabase.from('posts').insert({
-            model_id: modelId,
-            platform: 'reddit',
-            post_type: 'image',
-            content: title,
-            subreddit,
-            external_url: postUrl,
-            status: 'published',
-            published_at: new Date().toISOString(),
-            metadata: { image_url: imageUrl },
-        });
 
         await saveSession(modelId, context);
         await page.close();
-
-        return { success: true, url: postUrl };
+        return { success: false, error: oldResult.errorMsg || 'Post failed on both new and old Reddit. Check debug screenshots.' };
 
     } catch (error: unknown) {
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -797,6 +568,562 @@ export async function submitRedditImagePost(
         return { success: false, error: errMsg };
     } finally {
         if (context) await context.close();
+    }
+}
+
+/**
+ * Attempt to submit image post on new Reddit (www.reddit.com)
+ */
+async function tryNewRedditSubmit(
+    page: Page,
+    subreddit: string,
+    title: string,
+    tempImagePath: string,
+    isNsfw: boolean
+): Promise<{ submitted: boolean; url?: string; error?: string }> {
+    // Navigate to subreddit submission page
+    await page.goto(`https://www.reddit.com/r/${subreddit}/submit`, { waitUntil: 'commit', timeout: 60000 });
+    await page.waitForTimeout(randomDelay(3000, 5000));
+
+    // Check if logged in
+    if (page.url().includes('login')) {
+        return { submitted: false, error: 'login_required' };
+    }
+
+    // Switch to "Images & Video" tab
+    console.log('📷 Selecionando aba de imagem...');
+    const imageTabSelectors = [
+        'button[role="tab"][data-select-value="IMAGE"]',
+        'faceplate-tab[panel-id="IMAGE"]',
+        'button:has-text("Images")',
+        'button:has-text("Imagens")',
+    ];
+    for (const sel of imageTabSelectors) {
+        try {
+            const tab = page.locator(sel).first();
+            if (await tab.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await tab.click();
+                console.log(`  ✅ Image tab: ${sel}`);
+                break;
+            }
+        } catch { continue; }
+    }
+    await page.waitForTimeout(1000);
+
+    // Upload image via file input
+    console.log('📤 Uploading imagem...');
+    const fileInput = page.locator('input[type="file"]').first();
+    await fileInput.setInputFiles(tempImagePath);
+
+    // ======== IMPROVED: Wait for image upload to complete ========
+    console.log('  ⏳ Aguardando upload completo...');
+    await page.waitForTimeout(3000); // Initial wait
+
+    // Wait for upload preview to appear (up to 30s)
+    const uploadCompleteSelectors = [
+        'img[src*="preview.redd.it"]',
+        'img[src*="i.redd.it"]',
+        'img[src*="redditmedia"]',
+        'div[data-testid="image-preview"] img',
+        'faceplate-img[src*="redd"]',
+        // Thumbnail/preview container
+        'div[class*="thumbnail"] img',
+        'div[class*="preview"] img',
+    ];
+
+    let uploadConfirmed = false;
+    for (let attempt = 0; attempt < 15; attempt++) {
+        // Check for preview image
+        for (const sel of uploadCompleteSelectors) {
+            try {
+                if (await page.locator(sel).first().isVisible({ timeout: 500 }).catch(() => false)) {
+                    console.log(`  ✅ Upload confirmed via: ${sel}`);
+                    uploadConfirmed = true;
+                    break;
+                }
+            } catch { continue; }
+        }
+        if (uploadConfirmed) break;
+
+        // Also check: if no spinner/progress visible and file input changed, consider done
+        const hasSpinner = await page.locator('[class*="upload"], [class*="progress"], [class*="loading"], [class*="spinner"]')
+            .isVisible({ timeout: 500 }).catch(() => false);
+        if (!hasSpinner && attempt >= 3) {
+            console.log('  ✅ No upload indicator visible, assuming complete');
+            uploadConfirmed = true;
+            break;
+        }
+
+        await page.waitForTimeout(2000);
+        console.log(`  ⏳ Upload em progresso... (${attempt + 1}/15)`);
+    }
+
+    if (!uploadConfirmed) {
+        console.log('  ⚠️ Upload may not have completed, proceeding anyway...');
+    }
+
+    // Fill title — try multiple selectors
+    console.log('📝 Preenchendo título...');
+    const titleSelectors = [
+        'textarea[slot="title"]',
+        'textarea[name="title"]',
+        'textarea[placeholder*="Title"]',
+        'textarea[placeholder*="Título"]',
+        'input[placeholder*="Title"]',
+        '[data-test-id="post-title"] textarea',
+        'div[contenteditable="true"]',
+    ];
+    let titleFilled = false;
+    for (const sel of titleSelectors) {
+        try {
+            const input = page.locator(sel).first();
+            if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await input.click();
+                await input.fill(title);
+                titleFilled = true;
+                console.log(`  ✅ Title filled via: ${sel}`);
+                break;
+            }
+        } catch { continue; }
+    }
+    if (!titleFilled) {
+        console.log('  ⚠️ Could not find title input, trying keyboard approach...');
+        await page.keyboard.press('Tab');
+        await page.keyboard.type(title, { delay: 30 });
+    }
+    await page.waitForTimeout(1000);
+
+    // ======== IMPROVED: Trigger form validation via blur events ========
+    console.log('  🔄 Triggering form validation...');
+    await page.evaluate(() => {
+        // Blur all inputs/textareas to trigger validation
+        document.querySelectorAll('textarea, input').forEach(el => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
+        });
+    });
+    await page.waitForTimeout(500);
+
+    // Mark NSFW
+    if (isNsfw) {
+        console.log('🔞 Marcando NSFW...');
+        const nsfwSelectors = [
+            'button:has-text("NSFW")',
+            'faceplate-switch[input-name="nsfw"]',
+            'button[aria-label*="NSFW"]',
+            'button[aria-label*="nsfw"]',
+        ];
+        for (const sel of nsfwSelectors) {
+            try {
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await btn.click();
+                    console.log(`  ✅ NSFW via: ${sel}`);
+                    break;
+                }
+            } catch { continue; }
+        }
+    }
+
+    // Try to set flair if needed (some subs require it)
+    console.log('🏷️ Verificando flair...');
+    const flairSelectors = [
+        'button[aria-label*="flair" i]',
+        'button[aria-label*="Add flair"]',
+        'button:has-text("Add flair")',
+        'button:has-text("Flair")',
+    ];
+    for (const sel of flairSelectors) {
+        try {
+            const flairBtn = page.locator(sel).first();
+            if (await flairBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await flairBtn.click();
+                await page.waitForTimeout(1500);
+                const firstFlair = page.locator('[role="option"], [role="menuitemradio"], .flair-option').first();
+                if (await firstFlair.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await firstFlair.click();
+                    console.log('  ✅ Flair selected');
+                    await page.waitForTimeout(1000);
+                    const applyBtn = page.locator('button:has-text("Apply"), button:has-text("Aplicar"), button:has-text("Done")').first();
+                    if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        await applyBtn.click();
+                    }
+                }
+                break;
+            }
+        } catch { continue; }
+    }
+    await page.waitForTimeout(1000);
+
+    // Debug screenshot before submit
+    const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
+    await page.screenshot({ path: debugPath, fullPage: true });
+    console.log(`📸 Debug screenshot: ${debugPath}`);
+
+    // Log all buttons for debugging
+    const buttonsInfo = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('button')).map(b => ({
+            text: b.textContent?.trim()?.substring(0, 50),
+            type: b.type,
+            disabled: b.disabled,
+            ariaLabel: b.getAttribute('aria-label'),
+        })).filter(b => b.text && b.text.length > 0);
+    });
+    console.log('  📋 Buttons on page:', JSON.stringify(buttonsInfo.slice(0, 15)));
+
+    // ======== SUBMIT: 3 approaches ========
+    console.log('🚀 Procurando botão de submit...');
+    let submitted = false;
+
+    // --- Approach 1: Find submit button, wait up to 30s for it to enable ---
+    const submitSelectors = [
+        'shreddit-composer button[type="submit"]',
+        'button[type="submit"]',
+        'button:has-text("Post")',
+        'button:has-text("Publicar")',
+        'button:has-text("Submit")',
+    ];
+
+    for (const sel of submitSelectors) {
+        try {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                const isDisabled = await btn.isDisabled().catch(() => false);
+                if (isDisabled) {
+                    console.log(`  ⏳ Submit button found (${sel}) but disabled, waiting up to 30s...`);
+
+                    // Re-trigger validation periodically while waiting
+                    for (let i = 0; i < 30; i++) {
+                        if (!(await btn.isDisabled().catch(() => true))) break;
+
+                        // Every 5 seconds, re-trigger blur/input events on form fields
+                        if (i % 5 === 0 && i > 0) {
+                            await page.evaluate(() => {
+                                document.querySelectorAll('textarea, input').forEach(el => {
+                                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                                });
+                            });
+                            console.log(`  🔄 Re-triggered validation (${i}s)...`);
+                        }
+                        await page.waitForTimeout(1000);
+                    }
+                }
+
+                const stillDisabled = await btn.isDisabled().catch(() => false);
+                if (!stillDisabled) {
+                    await btn.click({ timeout: 10000 });
+                    submitted = true;
+                    console.log(`  ✅ Submit via: ${sel}`);
+                    break;
+                } else {
+                    console.log(`  ⚠️ Button still disabled after 30s: ${sel}`);
+                }
+            }
+        } catch (e) {
+            console.log(`  ⚠️ ${sel} failed:`, e instanceof Error ? e.message.substring(0, 100) : '');
+            continue;
+        }
+    }
+
+    // --- Approach 2: Force-enable the button, remove disabled attr, and click ---
+    if (!submitted) {
+        console.log('  🔧 Force-enabling submit button...');
+        try {
+            const forceResult = await page.evaluate(() => {
+                // Try regular DOM first
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const submit = buttons.find(b => {
+                    const text = b.textContent?.trim().toLowerCase() || '';
+                    return (text === 'post' || text === 'publicar' || text === 'submit') &&
+                        b.type === 'submit';
+                });
+                if (submit) {
+                    submit.disabled = false;
+                    submit.removeAttribute('disabled');
+                    submit.removeAttribute('aria-disabled');
+                    // Also enable any parent form
+                    const form = submit.closest('form');
+                    if (form) {
+                        form.querySelectorAll('[disabled]').forEach(el => {
+                            (el as HTMLElement).removeAttribute('disabled');
+                        });
+                    }
+                    submit.click();
+                    return 'force-clicked';
+                }
+
+                // Try shadow DOM (shreddit-composer)
+                const composers = document.querySelectorAll('shreddit-composer, [bundlename*="submit"]');
+                for (const comp of Array.from(composers)) {
+                    const shadow = (comp as HTMLElement).shadowRoot;
+                    if (shadow) {
+                        const shadowBtn = shadow.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+                        if (shadowBtn) {
+                            shadowBtn.disabled = false;
+                            shadowBtn.removeAttribute('disabled');
+                            shadowBtn.click();
+                            return 'shadow-force-clicked';
+                        }
+                    }
+                }
+
+                return 'not-found';
+            });
+            console.log(`  🔧 Force result: ${forceResult}`);
+            if (forceResult.includes('clicked')) submitted = true;
+        } catch (e) {
+            console.error('  ❌ Force-enable failed:', e);
+        }
+    }
+
+    // --- Approach 3: Try submitting form directly ---
+    if (!submitted) {
+        console.log('  🔧 Trying direct form submission...');
+        try {
+            const formResult = await page.evaluate(() => {
+                const forms = document.querySelectorAll('form');
+                for (const form of Array.from(forms)) {
+                    const submitBtn = form.querySelector('button[type="submit"]');
+                    if (submitBtn) {
+                        // Disable all validation
+                        form.setAttribute('novalidate', '');
+                        // Remove disabled from submit button
+                        (submitBtn as HTMLButtonElement).disabled = false;
+                        submitBtn.removeAttribute('disabled');
+                        // Try requestSubmit (native form submission)
+                        try {
+                            form.requestSubmit();
+                            return 'requestSubmit-ok';
+                        } catch {
+                            // Fallback: click submit
+                            (submitBtn as HTMLButtonElement).click();
+                            return 'form-submit-click';
+                        }
+                    }
+                }
+                return 'no-form-found';
+            });
+            console.log(`  🔧 Form result: ${formResult}`);
+            if (formResult !== 'no-form-found') submitted = true;
+        } catch (e) {
+            console.error('  ❌ Form submission failed:', e);
+        }
+    }
+
+    // Check for validation errors
+    if (!submitted) {
+        const errorText = await page.evaluate(() => {
+            const errors = document.querySelectorAll('[class*="error" i], [class*="Error"], [role="alert"]');
+            return Array.from(errors).map(e => e.textContent?.trim()).filter(Boolean).join('; ');
+        });
+        if (errorText) {
+            console.log(`  ❌ Form errors: ${errorText}`);
+        }
+    }
+
+    // ======== Handle NSFW confirmation modal ========
+    // Reddit shows a modal warning about NSFW content after clicking Post
+    // We need to confirm it to actually submit
+    await page.waitForTimeout(2000);
+    console.log('  🔍 Checking for NSFW confirmation modal...');
+
+    const nsfwModalSelectors = [
+        // Common modal confirm buttons
+        'dialog button:has-text("Yes")',
+        'dialog button:has-text("Continue")',
+        'dialog button:has-text("Confirm")',
+        'dialog button:has-text("Post")',
+        'dialog button:has-text("Sim")',
+        'dialog button:has-text("Continuar")',
+        'dialog button:has-text("Confirmar")',
+        // Reddit-specific modal selectors
+        '[role="dialog"] button:has-text("Yes")',
+        '[role="dialog"] button:has-text("Continue")',
+        '[role="dialog"] button:has-text("Confirm")',
+        '[role="dialog"] button:has-text("Post")',
+        '[role="alertdialog"] button:has-text("Yes")',
+        '[role="alertdialog"] button:has-text("Continue")',
+        '[role="alertdialog"] button:has-text("Confirm")',
+        // Generic modal overlays
+        '.modal button:has-text("Yes")',
+        '.modal button:has-text("Continue")',
+        '.modal button:has-text("Confirm")',
+        '.modal button:has-text("Post")',
+        // Shreddit overlay components
+        'shreddit-async-loader button:has-text("Yes")',
+        'shreddit-async-loader button:has-text("Continue")',
+        'shreddit-async-loader button:has-text("Post")',
+    ];
+
+    for (const sel of nsfwModalSelectors) {
+        try {
+            const modalBtn = page.locator(sel).first();
+            if (await modalBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                await modalBtn.click();
+                console.log(`  ✅ NSFW modal confirmed via: ${sel}`);
+                await page.waitForTimeout(2000);
+                break;
+            }
+        } catch { continue; }
+    }
+
+    // Also try JS approach for modals that may be in shadow DOM or hard to select
+    try {
+        const modalResult = await page.evaluate(() => {
+            // Find any visible dialog/modal overlay
+            const dialogs = document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], [class*="modal"], [class*="Modal"], [class*="overlay"], [class*="Overlay"]');
+            for (const dialog of Array.from(dialogs)) {
+                if (!(dialog as HTMLElement).offsetParent && !(dialog as HTMLDialogElement).open) continue;
+                const buttons = dialog.querySelectorAll('button');
+                for (const btn of Array.from(buttons)) {
+                    const text = btn.textContent?.trim().toLowerCase() || '';
+                    if (['yes', 'continue', 'confirm', 'post', 'sim', 'continuar', 'confirmar', 'ok'].includes(text)) {
+                        (btn as HTMLButtonElement).click();
+                        return `modal-confirmed: ${text}`;
+                    }
+                }
+            }
+            return 'no-modal';
+        });
+        if (modalResult !== 'no-modal') {
+            console.log(`  ✅ ${modalResult}`);
+            await page.waitForTimeout(2000);
+        }
+    } catch { /* no modal */ }
+
+    await page.waitForTimeout(2000);
+
+    // Wait for URL to change from submit page to actual post
+    let postUrl = page.url();
+
+    if (postUrl.includes('/submit')) {
+        console.log('  ⏳ Waiting for redirect after submit...');
+        try {
+            await page.waitForURL((url) => !url.toString().includes('/submit'), { timeout: 30000 });
+            postUrl = page.url();
+            console.log(`  ✅ Redirected to: ${postUrl}`);
+        } catch {
+            const afterPath = path.join(COOKIES_DIR, `debug_after_submit_${Date.now()}.png`);
+            await page.screenshot({ path: afterPath });
+            console.log(`  ⚠️ No redirect after 30s. Screenshot: ${afterPath}`);
+            console.log(`  Current URL: ${page.url()}`);
+            postUrl = page.url();
+        }
+    }
+
+    await page.waitForTimeout(2000);
+
+    // Verify if post was actually created
+    const postSuccess = postUrl.includes('/comments/') || (postUrl.includes('/r/') && !postUrl.includes('/submit'));
+
+    if (postSuccess) {
+        return { submitted: true, url: postUrl };
+    }
+
+    return { submitted: false, error: 'new_reddit_failed' };
+}
+
+/**
+ * Fallback: Submit image post via old.reddit.com
+ * Old Reddit uses a simple HTML form — no shadow DOM, no fancy components
+ */
+async function tryOldRedditSubmit(
+    page: Page,
+    subreddit: string,
+    title: string,
+    tempImagePath: string,
+    isNsfw: boolean
+): Promise<{ submitted: boolean; url?: string; errorMsg?: string }> {
+    try {
+        // Navigate to old Reddit submit page
+        await page.goto(`https://old.reddit.com/r/${subreddit}/submit`, { waitUntil: 'commit', timeout: 60000 });
+        await page.waitForTimeout(randomDelay(3000, 5000));
+
+        // Check if logged in on old Reddit
+        const loggedIn = await page.locator('.user a').isVisible({ timeout: 3000 }).catch(() => false);
+        if (!loggedIn) {
+            console.log('  ⚠️ Not logged in on old Reddit');
+            return { submitted: false, errorMsg: 'Not logged in on old.reddit.com' };
+        }
+
+        // Click the "image" or "link" tab (old Reddit uses tabs)
+        const linkTab = page.locator('a[href*="submit"], .submit-link, ul.tabmenu li a').filter({ hasText: /image|link|imagem/i }).first();
+        if (await linkTab.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await linkTab.click();
+            await page.waitForTimeout(1000);
+        }
+
+        // Try to find and use file upload (old Reddit may support it via drag-drop or input)
+        const fileInput = page.locator('input[type="file"]').first();
+        if (await fileInput.count() > 0) {
+            await fileInput.setInputFiles(tempImagePath);
+            console.log('  ✅ File uploaded on old Reddit');
+            await page.waitForTimeout(5000);
+        } else {
+            console.log('  ⚠️ No file input found on old Reddit — trying image URL approach');
+            // Old Reddit typically accepts URLs, not file uploads for images
+            // We'd need to upload the image to imgur first, which is complex
+            // For now, return failure so the error is reported
+            return { submitted: false, errorMsg: 'Old Reddit does not support direct file upload' };
+        }
+
+        // Fill title
+        const titleInput = page.locator('[name="title"], #title-field textarea, textarea[name="title"]').first();
+        if (await titleInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+            await titleInput.fill(title);
+            console.log('  ✅ Title filled on old Reddit');
+        }
+
+        // Mark NSFW if supported
+        if (isNsfw) {
+            const nsfwCheckbox = page.locator('input[name="over_18"], input#over18, label:has-text("NSFW") input').first();
+            if (await nsfwCheckbox.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await nsfwCheckbox.check();
+                console.log('  ✅ NSFW checked on old Reddit');
+            }
+        }
+
+        // Submit
+        const submitBtn = page.locator('button[type="submit"]:has-text("submit"), button[type="submit"]:has-text("post"), #submit_btn, .submit button').first();
+        if (await submitBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+            await submitBtn.click();
+            console.log('  🚀 Clicked submit on old Reddit');
+        } else {
+            // Try pressing Enter
+            await page.keyboard.press('Enter');
+        }
+
+        await page.waitForTimeout(3000);
+
+        // Wait for redirect
+        let postUrl = page.url();
+        if (postUrl.includes('/submit')) {
+            try {
+                await page.waitForURL((url) => !url.toString().includes('/submit'), { timeout: 30000 });
+                postUrl = page.url();
+                console.log(`  ✅ Old Reddit redirected to: ${postUrl}`);
+            } catch {
+                const afterPath = path.join(COOKIES_DIR, `debug_old_reddit_${Date.now()}.png`);
+                await page.screenshot({ path: afterPath });
+                console.log(`  ⚠️ Old Reddit no redirect. Screenshot: ${afterPath}`);
+                return { submitted: false, errorMsg: 'Old Reddit submit did not redirect' };
+            }
+        }
+
+        const success = postUrl.includes('/comments/') || (postUrl.includes('/r/') && !postUrl.includes('/submit'));
+        if (success) {
+            return { submitted: true, url: postUrl };
+        }
+
+        return { submitted: false, errorMsg: `Old Reddit ended at URL: ${postUrl}` };
+
+    } catch (error: unknown) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.error('  ❌ Old Reddit fallback error:', errMsg);
+        return { submitted: false, errorMsg: errMsg };
     }
 }
 
