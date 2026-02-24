@@ -997,33 +997,106 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
 
     // Try to set flair if needed (some subs require it)
     console.log('🏷️ Verificando flair...');
-    const flairSelectors = [
-        'button[aria-label*="flair" i]',
-        'button[aria-label*="Add flair"]',
-        'button:has-text("Add flair")',
-        'button:has-text("Flair")',
-    ];
-    for (const sel of flairSelectors) {
-        try {
-            const flairBtn = page.locator(sel).first();
-            if (await flairBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await flairBtn.click();
-                await page.waitForTimeout(1500);
-                const firstFlair = page.locator('[role="option"], [role="menuitemradio"], .flair-option').first();
-                if (await firstFlair.isVisible({ timeout: 2000 }).catch(() => false)) {
-                    await firstFlair.click();
-                    console.log('  ✅ Flair selected');
-                    await page.waitForTimeout(1000);
-                    const applyBtn = page.locator('button:has-text("Apply"), button:has-text("Aplicar"), button:has-text("Done")').first();
-                    if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-                        await applyBtn.click();
-                    }
+
+    async function trySelectFlair(): Promise<boolean> {
+        // Step 1: Find and click the flair button/picker
+        const flairTriggerSelectors = [
+            'button[aria-label*="flair" i]',
+            'button[aria-label*="Add flair"]',
+            'button:has-text("Add flair")',
+            'button:has-text("Flair")',
+            'button:has-text("Adicionar flair")',
+            'shreddit-post-flair-picker button',
+            'flair-selector button',
+            '[data-testid="post-flair-picker"] button',
+            'div[class*="flair"] button',
+            'button[class*="flair"]',
+        ];
+
+        let flairOpened = false;
+        for (const sel of flairTriggerSelectors) {
+            try {
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+                    await btn.click();
+                    await page.waitForTimeout(1500);
+                    flairOpened = true;
+                    console.log(`  🏷️ Flair picker opened via: ${sel}`);
+                    break;
                 }
-                break;
-            }
-        } catch { continue; }
+            } catch { continue; }
+        }
+
+        if (!flairOpened) {
+            console.log('  ℹ️ No flair picker found (sub may not require flair)');
+            return false;
+        }
+
+        // Step 2: Pick a flair option
+        const flairOptionSelectors = [
+            // Dialog/dropdown options
+            '[role="option"]',
+            '[role="menuitemradio"]',
+            '[role="radio"]',
+            'label:has(input[type="radio"])',
+            // Shreddit flair list items
+            'shreddit-post-flair-picker li',
+            'flair-selector li',
+            // Generic flair items
+            '.flair-option',
+            'div[class*="flair-item"]',
+            'div[class*="FlairItem"]',
+            'button[class*="flair"]',
+            // Dialog list items
+            'div[role="dialog"] li',
+            'div[role="dialog"] label',
+            'div[role="listbox"] div',
+        ];
+
+        for (const sel of flairOptionSelectors) {
+            try {
+                const options = page.locator(sel);
+                const count = await options.count();
+                if (count > 0) {
+                    // Pick a random flair (not the first, which might be "None")
+                    const idx = count > 1 ? 1 : 0;
+                    await options.nth(idx).click();
+                    console.log(`  ✅ Flair selected (option ${idx + 1} of ${count})`);
+                    await page.waitForTimeout(1000);
+
+                    // Click Apply/Done if dialog
+                    const applySelectors = [
+                        'button:has-text("Apply")',
+                        'button:has-text("Aplicar")',
+                        'button:has-text("Done")',
+                        'button:has-text("Save")',
+                        'button:has-text("Salvar")',
+                        'div[role="dialog"] button[type="submit"]',
+                    ];
+
+                    for (const applySel of applySelectors) {
+                        const applyBtn = page.locator(applySel).first();
+                        if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                            await applyBtn.click();
+                            console.log('  ✅ Flair applied');
+                            break;
+                        }
+                    }
+
+                    await page.waitForTimeout(1000);
+                    return true;
+                }
+            } catch { continue; }
+        }
+
+        console.log('  ⚠️ Flair picker opened but no options found');
+        // Close any open dialog
+        await page.keyboard.press('Escape').catch(() => { });
+        await page.waitForTimeout(500);
+        return false;
     }
-    await page.waitForTimeout(1000);
+
+    await trySelectFlair();
 
     // Debug screenshot before submit
     const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
@@ -1065,6 +1138,19 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
                     // Re-trigger validation periodically while waiting
                     for (let i = 0; i < 30; i++) {
                         if (!(await btn.isDisabled().catch(() => true))) break;
+
+                        // At 10 seconds, try selecting flair (most common reason for disabled button)
+                        if (i === 10) {
+                            console.log('  🏷️ Button still disabled — trying flair selection...');
+                            const flairSelected = await trySelectFlair();
+                            if (flairSelected) {
+                                await page.waitForTimeout(1000);
+                                if (!(await btn.isDisabled().catch(() => true))) {
+                                    console.log('  ✅ Flair fixed the disabled button!');
+                                    break;
+                                }
+                            }
+                        }
 
                         // Every 5 seconds, re-trigger blur/input events on form fields
                         if (i % 5 === 0 && i > 0) {
