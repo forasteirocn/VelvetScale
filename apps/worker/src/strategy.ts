@@ -510,33 +510,83 @@ Which ONE sub is the best match?`,
         console.log(`  ⚠️ Warnings: ${validation.warnings.join(', ')}`);
     }
 
-    // Post via Playwright
+    // Post via Playwright — with retry on different subs
     const { submitRedditImagePost } = await import('./integrations/reddit');
-    const result = await submitRedditImagePost(
-        modelId,
-        targetSub,
-        title,
-        photoUrl,
-        true
-    );
+    let triedSubs = [targetSub];
+    let currentSub = targetSub;
+    let currentTitle = title;
+    let result = await submitRedditImagePost(modelId, currentSub, currentTitle, photoUrl, true);
+
+    // Retry up to 2 more times with different subs if failed
+    const MAX_RETRIES = 2;
+    let retryCount = 0;
+
+    while (!result.success && retryCount < MAX_RETRIES) {
+        const errorLower = (result.error || '').toLowerCase();
+        const isRetryable = errorLower.includes('private') || errorLower.includes('restricted') ||
+            errorLower.includes('banned') || errorLower.includes('not_allowed') ||
+            errorLower.includes('timeout') || errorLower.includes('upload');
+
+        if (!isRetryable) break;
+
+        retryCount++;
+        console.log(`  🔄 Retry ${retryCount}/${MAX_RETRIES} — choosing another sub...`);
+
+        // Get remaining subs (exclude already tried)
+        const remainingSubs = subNames.filter(s => !triedSubs.includes(s));
+        if (remainingSubs.length === 0) {
+            console.log(`  ❌ No more subs to try`);
+            break;
+        }
+
+        // Pick next best sub
+        currentSub = await pickBestSubForCaption(caption || '🔥', remainingSubs, imageAnalysis);
+        triedSubs.push(currentSub);
+
+        // Generate new title for this sub
+        try {
+            const improved = await improveCaption(
+                caption || '🔥',
+                currentSub,
+                model.bio || '',
+                model.persona || '',
+                { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                imageAnalysis
+            );
+            currentTitle = improved.title;
+        } catch { /* keep previous title */ }
+
+        const retrySafeSub = currentSub.replace(/_/g, '\\_');
+        await sendTelegramMessage(chatId, `🔄 Tentando r/${retrySafeSub}...`);
+
+        result = await submitRedditImagePost(modelId, currentSub, currentTitle, photoUrl, true);
+    }
 
     if (result.success) {
-        await sendTelegramMessage(chatId, `Postado em r/${safeSub}!\n\n${result.url || ''}`);
+        const successSafeSub = currentSub.replace(/_/g, '\\_');
+        await sendTelegramMessage(chatId, `Postado em r/${successSafeSub}!\n\n${result.url || ''}`);
 
         await supabase
             .from('subreddits')
             .update({ last_posted_at: new Date().toISOString() })
             .eq('model_id', modelId)
-            .eq('name', targetSub);
+            .eq('name', currentSub);
     } else {
         const safeError = (result.error || 'Erro desconhecido').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
-        await sendTelegramMessage(chatId, `Erro ao postar: ${safeError}`);
+        const triedList = triedSubs.map(s => `r/${s}`).join(', ');
+        await sendTelegramMessage(chatId, `Erro ao postar (tentei ${triedList}): ${safeError}`);
     }
 
     await supabase.from('agent_logs').insert({
         model_id: modelId,
         action: 'intelligent_immediate_post',
-        details: { subreddit: targetSub, caption: title, success: result.success },
+        details: {
+            subreddit: currentSub,
+            tried_subs: triedSubs,
+            caption: currentTitle,
+            success: result.success,
+            retries: retryCount,
+        },
     });
 }
 

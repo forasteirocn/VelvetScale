@@ -630,11 +630,42 @@ async function tryNewRedditSubmit(
         console.log(`  🔐 Private/restricted community detected: r/${subreddit}`);
         console.log(`  🧠 Generating smart join request with Claude...`);
 
-        // Look for the join request text area
-        const joinTextArea = page.locator('textarea, div[contenteditable="true"], input[type="text"]').first();
-        const hasJoinForm = await joinTextArea.isVisible({ timeout: 2000 }).catch(() => false);
+        // Look for the join request text area — Reddit uses various DOM structures
+        const joinFormSelectors = [
+            // Direct modal content
+            'div[role="dialog"] textarea',
+            'div[role="dialog"] div[contenteditable="true"]',
+            'div[role="dialog"] input[type="text"]',
+            // Shreddit components
+            'shreddit-modal textarea',
+            'shreddit-modal div[contenteditable="true"]',
+            // Generic modal
+            'div[class*="modal"] textarea',
+            'div[class*="modal"] div[contenteditable="true"]',
+            // Page-level textarea (some modals render outside dialog)
+            'textarea[placeholder*="aderir"]',
+            'textarea[placeholder*="join"]',
+            'textarea[placeholder*="request"]',
+            'textarea[placeholder*="message"]',
+            // Fallback — any visible textarea on the page
+            'textarea',
+        ];
 
-        if (hasJoinForm) {
+        let joinTextArea = null;
+        for (const sel of joinFormSelectors) {
+            try {
+                const el = page.locator(sel).first();
+                if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+                    joinTextArea = el;
+                    console.log(`  ✅ Found join form: ${sel}`);
+                    break;
+                }
+            } catch { continue; }
+        }
+
+        const hasJoinForm = joinTextArea !== null;
+
+        if (hasJoinForm && joinTextArea) {
             try {
                 // Get model info for context
                 const supabase = (await import('@velvetscale/db')).getSupabaseAdmin();
