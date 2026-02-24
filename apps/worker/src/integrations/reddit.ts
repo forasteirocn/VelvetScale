@@ -1071,54 +1071,111 @@ Example: "Hey! I'm an active content creator and I'd love to be part of this com
             console.log(`  📋 Available: ${optionResult.allOptions.join(', ')}`);
         }
 
-        // Click the flair option
-        try {
-            let picked = false;
-            const option = page.getByText(optionResult.target, { exact: false }).first();
-            if (await option.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await option.click();
+        // Click the flair option — multiple aggressive strategies
+        const targetText = optionResult.target;
+        let picked = false;
+
+        // Strategy 1: Playwright page.click with text selector (best for shadow DOM)
+        if (!picked) {
+            try {
+                await page.click(`text="${targetText}"`, { timeout: 3000, force: true });
                 picked = true;
+                console.log(`  ✅ Flair clicked via page.click text="${targetText}"`);
+            } catch { /* continue */ }
+        }
+
+        // Strategy 2: getByText with force
+        if (!picked) {
+            try {
+                await page.getByText(targetText, { exact: false }).first().click({ force: true, timeout: 3000 });
+                picked = true;
+                console.log(`  ✅ Flair clicked via getByText`);
+            } catch { /* continue */ }
+        }
+
+        // Strategy 3: getByRole option/radio
+        if (!picked) {
+            try {
+                await page.getByRole('option', { name: targetText }).first().click({ force: true, timeout: 2000 });
+                picked = true;
+                console.log(`  ✅ Flair clicked via getByRole option`);
+            } catch {
+                try {
+                    await page.getByRole('radio', { name: targetText }).first().click({ force: true, timeout: 2000 });
+                    picked = true;
+                    console.log(`  ✅ Flair clicked via getByRole radio`);
+                } catch { /* continue */ }
             }
-            if (!picked) {
-                // JS click
+        }
+
+        // Strategy 4: Deep shadow DOM traversal
+        if (!picked) {
+            try {
                 picked = await page.evaluate((text: string) => {
-                    for (const el of document.querySelectorAll('li, label, [role="option"], [role="radio"], button, span, div')) {
-                        const t = (el.textContent || '').trim();
-                        if (t === text || t.includes(text)) {
-                            if ((el as HTMLElement).offsetHeight > 0) {
+                    function searchShadowDOM(root: Document | ShadowRoot | Element): boolean {
+                        const elements = root.querySelectorAll('li, label, span, div, button, [role="option"], [role="radio"]');
+                        for (const el of elements) {
+                            const t = (el.textContent || '').trim();
+                            if (t === text || (t.includes(text) && t.length < text.length + 20)) {
                                 (el as HTMLElement).click();
                                 return true;
                             }
                         }
+                        // Search inside shadow roots
+                        const allElements = root.querySelectorAll('*');
+                        for (const el of allElements) {
+                            if ((el as HTMLElement).shadowRoot) {
+                                if (searchShadowDOM((el as HTMLElement).shadowRoot!)) return true;
+                            }
+                        }
+                        return false;
                     }
-                    return false;
-                }, optionResult.target);
-            }
-
-            if (picked) {
-                console.log(`  ✅ Flair "${optionResult.target}" selected`);
-                await page.waitForTimeout(1500);
-
-                // Check for Apply/Save button
-                const applyResult = await askClaudeWhatToClick(
-                    page,
-                    'I selected a flair in a modal. Is there an "Apply", "Save" or "Done" button? Tell me the exact text. If modal closed, say "none".'
-                );
-
-                if (applyResult.action !== 'none' && applyResult.target) {
-                    const applyBtn = page.getByText(applyResult.target, { exact: false }).first();
-                    if (await applyBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                        await applyBtn.click();
-                        console.log(`  ✅ Flair applied: "${applyResult.target}"`);
-                        await page.waitForTimeout(1000);
-                    }
-                }
-                return true;
-            }
-        } catch {
-            console.log(`  ⚠️ Failed to select flair`);
+                    return searchShadowDOM(document);
+                }, targetText);
+                if (picked) console.log(`  ✅ Flair clicked via shadow DOM traversal`);
+            } catch { /* continue */ }
         }
 
+        // Strategy 5: XPath text match
+        if (!picked) {
+            try {
+                const xpathEl = page.locator(`//*[contains(text(), "${targetText}")]`).first();
+                if (await xpathEl.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await xpathEl.click({ force: true });
+                    picked = true;
+                    console.log(`  ✅ Flair clicked via XPath`);
+                }
+            } catch { /* continue */ }
+        }
+
+        if (picked) {
+            console.log(`  ✅ Flair "${targetText}" selected`);
+            await page.waitForTimeout(1500);
+
+            // Check for Apply/Save button
+            const applyResult = await askClaudeWhatToClick(
+                page,
+                'I selected a flair in a modal. Is there an "Apply", "Save" or "Done" button? Tell me the exact text. If modal closed, say "none".'
+            );
+
+            if (applyResult.action !== 'none' && applyResult.target) {
+                try {
+                    await page.click(`text="${applyResult.target}"`, { timeout: 3000, force: true });
+                    console.log(`  ✅ Flair applied: "${applyResult.target}"`);
+                    await page.waitForTimeout(1000);
+                } catch {
+                    // Try getByText
+                    try {
+                        await page.getByText(applyResult.target, { exact: false }).first().click({ force: true, timeout: 2000 });
+                        console.log(`  ✅ Flair applied via getByText`);
+                        await page.waitForTimeout(1000);
+                    } catch { /* ignore */ }
+                }
+            }
+            return true;
+        }
+
+        console.log(`  ⚠️ Failed to select flair "${targetText}" with all strategies`);
         await page.keyboard.press('Escape').catch(() => { });
         return false;
     }
