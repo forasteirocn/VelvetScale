@@ -196,16 +196,19 @@ async function processBatch(key: string): Promise<void> {
 
     // Save all to scheduled_posts
     for (const assignment of assignments) {
-        await supabase.from('scheduled_posts').insert({
+        const { error: insertError } = await supabase.from('scheduled_posts').insert({
             model_id: modelId,
-            image_url: assignment.photo.url,
+            photo_url: assignment.photo.url,
             original_caption: assignment.photo.caption || '',
             improved_title: assignment.title,
             target_subreddit: assignment.sub,
             scheduled_for: assignment.scheduledFor.toISOString(),
             status: 'queued',
-            is_nsfw: true,
         });
+
+        if (insertError) {
+            console.error(`  ❌ Failed to save scheduled post:`, insertError.message);
+        }
     }
 
     // Send calendar summary to Telegram
