@@ -508,52 +508,149 @@ export async function submitRedditImagePost(
             return { success: false, error: 'Session expired — need to login again' };
         }
 
-        // Switch to "Images & Video" tab (may already be selected)
-        const imageTab = page.locator('button[role="tab"][data-select-value="IMAGE"]').first();
-        if (await imageTab.isVisible({ timeout: 3000 }).catch(() => false)) {
-            await imageTab.click();
-            await page.waitForTimeout(randomDelay(500, 1000));
+        // Switch to "Images & Video" tab
+        console.log('📷 Selecionando aba de imagem...');
+        const imageTabSelectors = [
+            'button[role="tab"][data-select-value="IMAGE"]',
+            'faceplate-tab[panel-id="IMAGE"]',
+            'button:has-text("Images")',
+            'button:has-text("Imagens")',
+        ];
+        for (const sel of imageTabSelectors) {
+            try {
+                const tab = page.locator(sel).first();
+                if (await tab.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await tab.click();
+                    console.log(`  ✅ Image tab: ${sel}`);
+                    break;
+                }
+            } catch { continue; }
         }
+        await page.waitForTimeout(1000);
 
         // Upload image via file input
+        console.log('📤 Uploading imagem...');
         const fileInput = page.locator('input[type="file"]').first();
         await fileInput.setInputFiles(tempImagePath);
 
-        // Wait for image to finish uploading (look for thumbnail or progress bar to disappear)
-        console.log('📤 Aguardando upload da imagem...');
-        await page.waitForTimeout(5000); // Minimum wait
-        // Wait up to 15 more seconds for upload to complete
-        for (let i = 0; i < 5; i++) {
-            const uploading = await page.locator('[class*="upload"], [class*="progress"], [class*="loading"]').isVisible({ timeout: 1000 }).catch(() => false);
+        // Wait for image to finish uploading
+        console.log('  ⏳ Aguardando upload...');
+        await page.waitForTimeout(5000);
+        for (let i = 0; i < 10; i++) {
+            const uploading = await page.locator('[class*="upload"], [class*="progress"], [class*="loading"], [class*="spinner"]').isVisible({ timeout: 1000 }).catch(() => false);
             if (!uploading) break;
-            await page.waitForTimeout(3000);
-            console.log('  ⏳ Upload em progresso...');
+            await page.waitForTimeout(2000);
+            console.log(`  ⏳ Upload em progresso... (${i + 1})`);
         }
 
-        // Fill title
-        const titleInput = page.locator('textarea[name="title"], textarea[placeholder*="Title"], textarea[placeholder*="Título"], input[placeholder*="Title"], [data-test-id="post-title"] textarea').first();
-        await titleInput.fill(title);
-        await page.waitForTimeout(randomDelay(500, 1000));
+        // Fill title — try multiple selectors
+        console.log('📝 Preenchendo título...');
+        const titleSelectors = [
+            'textarea[slot="title"]',
+            'textarea[name="title"]',
+            'textarea[placeholder*="Title"]',
+            'textarea[placeholder*="Título"]',
+            'input[placeholder*="Title"]',
+            '[data-test-id="post-title"] textarea',
+            'div[contenteditable="true"]',
+        ];
+        let titleFilled = false;
+        for (const sel of titleSelectors) {
+            try {
+                const input = page.locator(sel).first();
+                if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await input.click();
+                    await input.fill(title);
+                    titleFilled = true;
+                    console.log(`  ✅ Title filled via: ${sel}`);
+                    break;
+                }
+            } catch { continue; }
+        }
+        if (!titleFilled) {
+            console.log('  ⚠️ Could not find title input, trying keyboard approach...');
+            // Fallback: try to type in the focused element
+            await page.keyboard.press('Tab');
+            await page.keyboard.type(title, { delay: 30 });
+        }
+        await page.waitForTimeout(1000);
 
         // Mark NSFW
         if (isNsfw) {
-            const nsfwButton = page.locator('button:has-text("NSFW")').first();
-            if (await nsfwButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await nsfwButton.click();
-                await page.waitForTimeout(randomDelay(300, 500));
+            console.log('🔞 Marcando NSFW...');
+            const nsfwSelectors = [
+                'button:has-text("NSFW")',
+                'faceplate-switch[input-name="nsfw"]',
+                'button[aria-label*="NSFW"]',
+                'button[aria-label*="nsfw"]',
+            ];
+            for (const sel of nsfwSelectors) {
+                try {
+                    const btn = page.locator(sel).first();
+                    if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                        await btn.click();
+                        console.log(`  ✅ NSFW via: ${sel}`);
+                        break;
+                    }
+                } catch { continue; }
             }
         }
 
+        // Try to set flair if needed (some subs require it)
+        console.log('🏷️ Verificando flair...');
+        const flairSelectors = [
+            'button[aria-label*="flair" i]',
+            'button[aria-label*="Add flair"]',
+            'button:has-text("Add flair")',
+            'button:has-text("Flair")',
+        ];
+        for (const sel of flairSelectors) {
+            try {
+                const flairBtn = page.locator(sel).first();
+                if (await flairBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    await flairBtn.click();
+                    await page.waitForTimeout(1500);
+                    // Click first flair option
+                    const firstFlair = page.locator('[role="option"], [role="menuitemradio"], .flair-option').first();
+                    if (await firstFlair.isVisible({ timeout: 2000 }).catch(() => false)) {
+                        await firstFlair.click();
+                        console.log('  ✅ Flair selected');
+                        await page.waitForTimeout(1000);
+                        // Click "Apply" if there's a confirm button
+                        const applyBtn = page.locator('button:has-text("Apply"), button:has-text("Aplicar"), button:has-text("Done")').first();
+                        if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                            await applyBtn.click();
+                        }
+                    }
+                    break;
+                }
+            } catch { continue; }
+        }
+        await page.waitForTimeout(1000);
+
         // Debug screenshot before submit
         const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
-        await page.screenshot({ path: debugPath });
+        await page.screenshot({ path: debugPath, fullPage: true });
         console.log(`📸 Debug screenshot: ${debugPath}`);
 
-        // Submit post — try multiple approaches
+        // Log all buttons for debugging
+        const buttonsInfo = await page.evaluate(() => {
+            return Array.from(document.querySelectorAll('button')).map(b => ({
+                text: b.textContent?.trim()?.substring(0, 50),
+                type: b.type,
+                disabled: b.disabled,
+                ariaLabel: b.getAttribute('aria-label'),
+            })).filter(b => b.text && b.text.length > 0);
+        });
+        console.log('  📋 Buttons on page:', JSON.stringify(buttonsInfo.slice(0, 15)));
+
+        // Wait for submit button to become enabled
+        console.log('🚀 Procurando botão de submit...');
         let submitted = false;
 
-        // Approach 1: Click the submit button by text
+        // Approach 1: Find submit button and wait for it to be enabled
         const submitSelectors = [
+            'shreddit-composer button[type="submit"]',
             'button[type="submit"]',
             'button:has-text("Post")',
             'button:has-text("Publicar")',
@@ -564,33 +661,71 @@ export async function submitRedditImagePost(
             try {
                 const btn = page.locator(sel).first();
                 if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    // Wait up to 10s for button to become enabled
                     const isDisabled = await btn.isDisabled().catch(() => false);
-                    if (!isDisabled) {
+                    if (isDisabled) {
+                        console.log(`  ⏳ Submit button found (${sel}) but disabled, waiting...`);
+                        try {
+                            await btn.waitFor({ state: 'attached', timeout: 10000 });
+                            // Poll for enabled state
+                            for (let i = 0; i < 10; i++) {
+                                if (!(await btn.isDisabled().catch(() => true))) break;
+                                await page.waitForTimeout(1000);
+                            }
+                        } catch { /* proceed anyway */ }
+                    }
+
+                    const stillDisabled = await btn.isDisabled().catch(() => false);
+                    if (!stillDisabled) {
                         await btn.click({ timeout: 10000 });
                         submitted = true;
                         console.log(`  ✅ Submit via: ${sel}`);
                         break;
+                    } else {
+                        console.log(`  ⚠️ Button still disabled: ${sel}`);
                     }
                 }
-            } catch { continue; }
+            } catch (e) {
+                console.log(`  ⚠️ ${sel} failed:`, e instanceof Error ? e.message.substring(0, 100) : '');
+                continue;
+            }
         }
 
         // Approach 2: Force click via JS if normal click failed
         if (!submitted) {
+            console.log('  🔄 Trying JS click...');
             try {
-                await page.evaluate(() => {
+                const jsResult = await page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button'));
-                    const submit = buttons.find(b =>
-                        b.textContent?.includes('Post') ||
-                        b.textContent?.includes('Publicar') ||
-                        b.textContent?.includes('Submit')
-                    );
-                    if (submit) (submit as HTMLButtonElement).click();
+                    const submit = buttons.find(b => {
+                        const text = b.textContent?.trim().toLowerCase() || '';
+                        return (text === 'post' || text === 'publicar' || text === 'submit') &&
+                            b.type === 'submit';
+                    });
+                    if (submit && !submit.disabled) {
+                        submit.click();
+                        return 'clicked';
+                    }
+                    if (submit && submit.disabled) {
+                        return `disabled: ${submit.textContent?.trim()}`;
+                    }
+                    return 'not found';
                 });
-                submitted = true;
-                console.log('  ✅ Submit via JS evaluate');
+                console.log(`  JS result: ${jsResult}`);
+                if (jsResult === 'clicked') submitted = true;
             } catch (e) {
                 console.error('  ❌ JS submit failed:', e);
+            }
+        }
+
+        // Approach 3: If button is disabled, there might be a validation error
+        if (!submitted) {
+            const errorText = await page.evaluate(() => {
+                const errors = document.querySelectorAll('[class*="error" i], [class*="Error"], [role="alert"]');
+                return Array.from(errors).map(e => e.textContent?.trim()).filter(Boolean).join('; ');
+            });
+            if (errorText) {
+                console.log(`  ❌ Form errors: ${errorText}`);
             }
         }
 
