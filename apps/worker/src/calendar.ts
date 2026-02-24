@@ -18,7 +18,7 @@ const photoBatches: Map<string, {
 }> = new Map();
 
 const BATCH_WAIT_MS = 30_000; // Wait 30s after last photo for batch to "close"
-const MAX_POSTS_PER_DAY = 3;
+const MAX_POSTS_PER_DAY = 4;
 const MIN_HOURS_BETWEEN_POSTS = 4;
 
 /**
