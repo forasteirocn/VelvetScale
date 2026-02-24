@@ -638,3 +638,90 @@ Generate 3 title variations.`,
     // Fallback: return single title
     return [{ title: caption, style: 'direct', confidence: 50 }];
 }
+
+// =============================================
+// Vision-Guided Browser Interaction
+// Claude sees the screen and tells us what to click
+// =============================================
+
+export interface VisionClickResult {
+    action: 'click_text' | 'click_option' | 'type_text' | 'close' | 'none';
+    target: string;
+    explanation: string;
+    allOptions?: string[];
+}
+
+/**
+ * Send a screenshot to Claude Vision and ask what to do
+ */
+export async function analyzeScreenshot(
+    screenshotBase64: string,
+    question: string
+): Promise<VisionClickResult> {
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 300,
+            system: `You are a browser automation assistant. You see a screenshot of a Reddit page.
+Your job is to identify what needs to be clicked or interacted with.
+
+ALWAYS respond with valid JSON:
+{
+  "action": "click_text" | "click_option" | "type_text" | "close" | "none",
+  "target": "EXACT visible text of the button/option to click",
+  "explanation": "brief reason",
+  "allOptions": ["option1", "option2"]
+}
+
+RULES:
+- "target" must be the EXACT visible text as shown on screen — case sensitive
+- For flair modals: pick a safe/generic flair, list ALL options in allOptions
+- For confirmation dialogs: identify the confirm/accept button text
+- If nothing needs to be done, use action "none"
+- If a dialog should be dismissed, use action "close"`,
+            messages: [{
+                role: 'user',
+                content: [
+                    {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: 'image/png',
+                            data: screenshotBase64,
+                        },
+                    },
+                    { type: 'text', text: question },
+                ],
+            }],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const result = JSON.parse(jsonMatch[0]) as VisionClickResult;
+            console.log(`  🧠 Claude Vision: ${result.action} → "${result.target}" (${result.explanation})`);
+            return result;
+        }
+    } catch (err) {
+        console.error('⚠️ Vision analysis failed:', err instanceof Error ? err.message : err);
+    }
+
+    return { action: 'none', target: '', explanation: 'analysis failed' };
+}
+
+/**
+ * Take screenshot and ask Claude what to click
+ */
+export async function askClaudeWhatToClick(
+    page: { screenshot: (opts?: Record<string, unknown>) => Promise<Buffer> },
+    question: string
+): Promise<VisionClickResult> {
+    try {
+        const screenshot = await page.screenshot({ type: 'png', fullPage: false });
+        const base64 = screenshot.toString('base64');
+        return await analyzeScreenshot(base64, question);
+    } catch (err) {
+        console.error('⚠️ Screenshot failed:', err instanceof Error ? err.message : err);
+        return { action: 'none', target: '', explanation: 'screenshot failed' };
+    }
+}
