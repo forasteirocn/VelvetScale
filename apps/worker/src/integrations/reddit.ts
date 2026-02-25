@@ -678,9 +678,7 @@ async function tryNewRedditSubmit(
     }
 
     if (!uploadConfirmed) {
-        const dbgPath = path.join(COOKIES_DIR, `debug_upload_${Date.now()}.png`);
-        await page.screenshot({ path: dbgPath, fullPage: true });
-        console.log(`  ⚠️ Preview não detectado. Screenshot: ${dbgPath}`);
+        console.log('  ⚠️ Preview não detectado — continuando mesmo assim');
     }
 
     // ======== PREENCHER TÍTULO ========
@@ -738,206 +736,185 @@ async function tryNewRedditSubmit(
         await page.waitForTimeout(500);
     }
 
-    // ======== CORREÇÕES 2 + 3: FLAIR COM CONFIRMAÇÃO DENTRO DO MODAL ========
+    // ======== FLAIR — LÓGICA DOM PURA (sem Claude Vision) ========
     console.log('🏷️ Verificando flair...');
 
-    async function trySelectFlairWithVision(): Promise<boolean> {
-        // Passo 1: verificar se há flair picker
-        const result = await askClaudeWhatToClick(
-            page,
-            'I am on a Reddit post submission page. Is there a flair picker or "Add flair" / "Adicionar flair" button visible? If yes, tell me the exact text to click to open it. If flair is already selected or not required, say action "none".'
-        );
+    async function trySelectFlair(): Promise<boolean> {
+        // Passo 1: verificar se existe botão de abrir flair picker
+        // Texto conhecido: "Adicionar flair", "Adicionar tags", "Add flair", "Add tag"
+        const flairOpenSelectors = [
+            'button:has-text("Adicionar flair")',
+            'button:has-text("Adicionar tags")',
+            'button:has-text("Add flair")',
+            'button:has-text("Add tag")',
+            'button:has-text("Flair")',
+            '[data-testid="flair-button"]',
+            'shreddit-post-flair-picker-trigger',
+        ];
 
-        if (result.action === 'none') {
-            console.log('  ℹ️ Flair não necessário');
-            return false;
-        }
-        if (!result.target) return false;
-
-        console.log(`  🏷️ Abrindo flair picker: "${result.target}"`);
-
-        // Abrir o picker
-        let opened = false;
-        try {
-            await page.getByText(result.target, { exact: false }).first().click({ timeout: 3000 });
-            opened = true;
-        } catch { }
-        if (!opened) {
+        let flairBtnFound = false;
+        for (const sel of flairOpenSelectors) {
             try {
-                await page.click(`text="${result.target}"`, { timeout: 3000, force: true });
-                opened = true;
-            } catch { }
-        }
-        if (!opened) {
-            opened = await page.evaluate((t: string) => {
-                for (const el of document.querySelectorAll('button, div, span, a, [role="button"]')) {
-                    if ((el.textContent || '').trim().toLowerCase().includes(t.toLowerCase()) && (el as HTMLElement).offsetHeight > 0) {
-                        (el as HTMLElement).click();
-                        return true;
-                    }
-                }
-                return false;
-            }, result.target);
-        }
-
-        if (!opened) {
-            console.log('  ⚠️ Não conseguiu abrir flair picker');
-            return false;
-        }
-
-        await page.waitForTimeout(1500);
-
-        // Passo 2: Claude escolhe a opção
-        const optionResult = await askClaudeWhatToClick(
-            page,
-            'I opened a flair picker on Reddit. I can see flair options as radio buttons or a list. Pick the SAFEST and most GENERIC flair (e.g. "Sem flair", "No Flair", "General", "OC", "Image"). IMPORTANT: Do NOT select "Adicionar", "Add", "Apply", "Cancelar" or "Cancel" — those are action buttons, not flair options. Tell me the EXACT visible text of the FLAIR OPTION to select (the radio button label). List ALL flair options in allOptions.'
-        );
-
-        if (optionResult.action === 'none' || !optionResult.target) {
-            console.log('  ⚠️ Claude não encontrou opções');
-            await page.keyboard.press('Escape').catch(() => { });
-            return false;
-        }
-
-        console.log(`  🏷️ Selecionando: "${optionResult.target}"`);
-        if (optionResult.allOptions?.length) console.log(`  📋 Opções: ${optionResult.allOptions.join(', ')}`);
-
-        const targetText = optionResult.target;
-        let picked = false;
-
-        if (!picked) { try { await page.click(`text="${targetText}"`, { timeout: 3000, force: true }); picked = true; } catch { } }
-        if (!picked) { try { await page.getByText(targetText, { exact: false }).first().click({ force: true, timeout: 3000 }); picked = true; } catch { } }
-        if (!picked) { try { await page.getByRole('option', { name: targetText }).first().click({ force: true, timeout: 2000 }); picked = true; } catch { try { await page.getByRole('radio', { name: targetText }).first().click({ force: true, timeout: 2000 }); picked = true; } catch { } } }
-        if (!picked) {
-            picked = await page.evaluate((text: string) => {
-                function searchShadowDOM(root: Document | ShadowRoot | Element): boolean {
-                    for (const el of root.querySelectorAll('li, label, span, div, button, [role="option"], [role="radio"]')) {
-                        const t = (el.textContent || '').trim();
-                        if (t === text || (t.includes(text) && t.length < text.length + 20)) { (el as HTMLElement).click(); return true; }
-                    }
-                    for (const el of root.querySelectorAll('*')) {
-                        if ((el as HTMLElement).shadowRoot && searchShadowDOM((el as HTMLElement).shadowRoot!)) return true;
-                    }
-                    return false;
-                }
-                return searchShadowDOM(document);
-            }, targetText);
-        }
-
-        if (!picked) {
-            console.log('  ⚠️ Não conseguiu clicar na opção');
-            await page.keyboard.press('Escape').catch(() => { });
-            return false;
-        }
-
-        await page.waitForTimeout(1000);
-
-        // ======== CORREÇÃO CRÍTICA: CONFIRMAR DENTRO DO MODAL ========
-        // NÃO usar Escape ou click fora — isso cancela a seleção no Reddit.
-        // Pedir ao Claude para encontrar o botão de confirmação DENTRO do modal.
-        console.log('  💾 Confirmando flair dentro do modal...');
-
-        const confirmResult = await askClaudeWhatToClick(
-            page,
-            `I just selected a flair radio button in a Reddit flair modal. I need to SAVE/CONFIRM this selection now.
-Look for the BLUE confirmation button inside the modal — in Portuguese Reddit it's called "Adicionar", in English it may be "Apply", "Add", "Save flairs", or "Done".
-This button is usually blue/filled and at the bottom-right of the modal.
-Do NOT suggest "Cancelar" or "Cancel". Do NOT suggest clicking outside the modal.
-If the modal already closed automatically, say action "none".`
-        );
-
-        let confirmed = false;
-
-        if (confirmResult.action === 'none') {
-            console.log('  ✅ Modal fechou automaticamente — flair salvo');
-            confirmed = true;
-        } else if (confirmResult.target) {
-            console.log(`  💾 Clicando botão de confirmação: "${confirmResult.target}"`);
-
-            // Tentar clicar DENTRO de containers de modal — nunca fora
-            const modalContainers = [
-                'dialog', '[role="dialog"]', 'shreddit-post-flair-picker',
-                'flair-selector', '[class*="modal"]', 'shreddit-async-loader',
-            ];
-
-            for (const modalSel of modalContainers) {
-                try {
-                    const modal = page.locator(modalSel).first();
-                    if (!await modal.isVisible({ timeout: 500 }).catch(() => false)) continue;
-                    const btnInModal = modal.getByText(confirmResult.target, { exact: false }).first();
-                    if (await btnInModal.isVisible({ timeout: 1000 }).catch(() => false)) {
-                        await btnInModal.click({ force: true });
-                        confirmed = true;
-                        console.log(`  ✅ Confirmado dentro do modal`);
-                        break;
-                    }
-                } catch { continue; }
-            }
-
-            if (!confirmed) {
-                try {
-                    const btn = page.getByRole('button', { name: new RegExp(confirmResult.target, 'i') }).first();
-                    if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
-                        await btn.click({ force: true });
-                        confirmed = true;
-                    }
-                } catch { }
-            }
-        }
-
-        // Fallback: selectors conhecidos de confirmação
-        // IMPORTANTE: "Adicionar" é o botão azul de confirmação no Reddit em PT
-        // (não confundir com "Adicionar flair" que ABRE o picker)
-        if (!confirmed) {
-            const applySelectors = [
-                // Reddit PT — botão azul de confirmar no modal de flair
-                '[role="dialog"] button:has-text("Adicionar"):not(:has-text("flair")):not(:has-text("tags"))',
-                'dialog button:has-text("Adicionar"):not(:has-text("flair")):not(:has-text("tags"))',
-                // Reddit EN
-                '[role="dialog"] button:has-text("Apply")',
-                '[role="dialog"] button:has-text("Save flairs")',
-                '[role="dialog"] button:has-text("Done")',
-                '[role="dialog"] button:has-text("Add")',
-                // Shreddit components
-                'shreddit-post-flair-picker button[type="submit"]',
-                'flair-selector button[type="submit"]',
-                'dialog button[type="submit"]',
-            ];
-            for (const sel of applySelectors) {
-                try {
-                    const btn = page.locator(sel).first();
-                    if (!await btn.isVisible({ timeout: 1000 }).catch(() => false)) continue;
-                    const btnText = await btn.textContent().catch(() => '');
-                    // Ignorar botões que ABREM o picker (contêm "flair" ou "tags" no texto)
-                    const txt = btnText?.toLowerCase() || '';
-                    if (txt.includes('flair') || txt.includes('tags') || txt.includes('adicionar flair') || txt.includes('adicionar tags')) continue;
-                    await btn.click({ force: true });
-                    confirmed = true;
-                    console.log(`  ✅ Confirmado via: "${btnText?.trim()}"`);
-                    await page.waitForTimeout(500);
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    await btn.click();
+                    console.log(`  🏷️ Flair picker aberto via: ${sel}`);
+                    flairBtnFound = true;
+                    await page.waitForTimeout(1000);
                     break;
-                } catch { continue; }
-            }
+                }
+            } catch { continue; }
         }
 
-        // Escape apenas como último recurso absoluto
-        if (!confirmed) {
-            console.log('  ⚠️ Usando Escape como último recurso');
+        if (!flairBtnFound) {
+            console.log('  ℹ️ Sem botão de flair — não obrigatório');
+            return false;
+        }
+
+        // Passo 2: ler radio buttons do DOM diretamente (sem screenshot)
+        // O modal tem: input[type="radio"] ou [role="radio"] para cada opção de flair
+        const flairOptions = await page.evaluate((): string[] => {
+            const options: string[] = [];
+
+            // Tentar radio buttons nativos
+            const radios = document.querySelectorAll('input[type="radio"]');
+            for (const radio of Array.from(radios)) {
+                const label = radio.closest('label') || document.querySelector(`label[for="${radio.id}"]`);
+                const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
+                if (text && !options.includes(text)) options.push(text);
+            }
+
+            // Tentar [role="radio"] se não achou nativos
+            if (options.length === 0) {
+                const roleRadios = document.querySelectorAll('[role="radio"], [role="option"]');
+                for (const el of Array.from(roleRadios)) {
+                    const text = (el.textContent || '').trim();
+                    if (text && !options.includes(text)) options.push(text);
+                }
+            }
+
+            // Tentar li dentro do modal
+            if (options.length === 0) {
+                const dialog = document.querySelector('dialog, [role="dialog"]');
+                if (dialog) {
+                    for (const li of Array.from(dialog.querySelectorAll('li, label'))) {
+                        const text = (li.textContent || '').trim();
+                        // Filtrar botões de ação
+                        if (text && !['Adicionar', 'Add', 'Apply', 'Cancelar', 'Cancel', 'Done'].includes(text)) {
+                            options.push(text);
+                        }
+                    }
+                }
+            }
+
+            return options;
+        });
+
+        console.log(`  📋 Opções de flair encontradas: ${flairOptions.join(', ') || 'nenhuma'}`);
+
+        if (flairOptions.length === 0) {
+            // Modal abriu mas sem opções detectáveis — fechar e continuar
+            await page.keyboard.press('Escape').catch(() => { });
+            return false;
+        }
+
+        // Passo 3: escolher a melhor opção
+        // Prioridade: "Sem flair" > "No Flair" > primeira opção disponível
+        const preferredTexts = [
+            'sem flair', 'no flair', 'none', 'nenhum', 'nenhuma',
+            'general', 'oc', 'original content', 'image', 'photo',
+        ];
+        let chosen = flairOptions[0]; // fallback: primeira opção
+        for (const preferred of preferredTexts) {
+            const match = flairOptions.find(o => o.toLowerCase().includes(preferred));
+            if (match) { chosen = match; break; }
+        }
+
+        console.log(`  🏷️ Escolhendo flair: "${chosen}"`);
+
+        // Passo 4: clicar na opção escolhida via DOM
+        const clicked = await page.evaluate((targetText: string) => {
+            // Buscar radio nativo
+            const radios = document.querySelectorAll('input[type="radio"]');
+            for (const radio of Array.from(radios)) {
+                const label = radio.closest('label') || document.querySelector(`label[for="${(radio as HTMLInputElement).id}"]`);
+                const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
+                if (text === targetText) {
+                    (radio as HTMLInputElement).click();
+                    return `radio:${text}`;
+                }
+            }
+            // Buscar [role="radio"] ou [role="option"]
+            const roleEls = document.querySelectorAll('[role="radio"], [role="option"], li, label');
+            for (const el of Array.from(roleEls)) {
+                const text = (el.textContent || '').trim();
+                if (text === targetText) {
+                    (el as HTMLElement).click();
+                    return `role:${text}`;
+                }
+            }
+            return null;
+        }, chosen);
+
+        if (!clicked) {
+            console.log('  ⚠️ Não conseguiu clicar na opção via DOM');
+            await page.keyboard.press('Escape').catch(() => { });
+            return false;
+        }
+
+        console.log(`  ✅ Opção selecionada: ${clicked}`);
+        await page.waitForTimeout(500);
+
+        // Passo 5: clicar no botão de confirmação (Adicionar / Apply / Add)
+        // NUNCA usar Escape ou clicar fora — isso cancela a seleção
+        const confirmed = await page.evaluate((): string | null => {
+            const confirmTexts = ['Adicionar', 'Add', 'Apply', 'Save flairs', 'Done', 'OK', 'Confirm'];
+            const dialog = document.querySelector('dialog, [role="dialog"]');
+            const searchRoot = dialog || document;
+
+            for (const text of confirmTexts) {
+                const buttons = Array.from(searchRoot.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    const btnText = btn.textContent?.trim() || '';
+                    // Match exato ou contém — mas NÃO deve conter "flair" ou "tags" (esses ABREM o picker)
+                    if (btnText === text || (btnText.includes(text) && !btnText.toLowerCase().includes('flair') && !btnText.toLowerCase().includes('tags'))) {
+                        btn.click();
+                        return btnText;
+                    }
+                }
+            }
+            return null;
+        });
+
+        if (confirmed) {
+            console.log(`  ✅ Flair confirmado via botão: "${confirmed}"`);
+        } else {
+            // Último recurso: Tab + Enter para focar e confirmar o botão
+            console.log('  ⚠️ Botão de confirmação não encontrado via DOM, tentando Tab+Enter...');
+            await page.keyboard.press('Tab');
+            await page.waitForTimeout(200);
+            await page.keyboard.press('Enter');
+        }
+
+        await page.waitForTimeout(800);
+
+        // Verificar se o modal fechou (confirmação bem-sucedida)
+        const modalStillOpen = await page.evaluate(() =>
+            !!document.querySelector('dialog[open], [role="dialog"]')
+        );
+
+        if (modalStillOpen) {
+            console.log('  ⚠️ Modal ainda aberto — tentando Escape como último recurso');
             await page.keyboard.press('Escape').catch(() => { });
             await page.waitForTimeout(500);
+        } else {
+            console.log('  ✅ Modal fechou — flair salvo com sucesso');
         }
-
-        await page.waitForTimeout(1000);
-
-        const flairConfirmed = await page.evaluate((text) =>
-            document.body.innerHTML.toLowerCase().includes(text.toLowerCase()), targetText
-        );
-        console.log(`  ${flairConfirmed ? '✅' : '⚠️'} Flair "${targetText}" ${flairConfirmed ? 'confirmado no formulário' : 'pode não ter sido salvo'}`);
 
         return true;
     }
 
-    await trySelectFlairWithVision();
+    await trySelectFlair();
     await page.waitForTimeout(500);
 
     // Verificar imagem ainda presente após flair
@@ -966,10 +943,6 @@ If the modal already closed automatically, say action "none".`
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(500);
 
-    const debugPath = path.join(COOKIES_DIR, `debug_submit_${Date.now()}.png`);
-    await page.screenshot({ path: debugPath, fullPage: true });
-    console.log(`📸 Debug: ${debugPath}`);
-
     // Disparar validação do React
     await page.evaluate(() => {
         document.querySelectorAll('textarea, input').forEach(el => {
@@ -996,13 +969,14 @@ If the modal already closed automatically, say action "none".`
             const btn = page.locator(sel).first();
             if (!await btn.isVisible({ timeout: 2000 }).catch(() => false)) continue;
 
-            // Aguarda até 30s pelo botão habilitar
-            for (let i = 0; i < 30; i++) {
+            // Aguarda até 20s pelo botão habilitar
+            for (let i = 0; i < 20; i++) {
                 if (!await btn.isDisabled().catch(() => true)) break;
 
-                if (i === 10) {
+                if (i === 8) {
+                    // Submit ainda desabilitado — tentar flair de novo via DOM
                     console.log('  🏷️ Submit desabilitado — tentando flair de novo...');
-                    await trySelectFlairWithVision();
+                    await trySelectFlair();
                     await page.waitForTimeout(1000);
                 }
 
