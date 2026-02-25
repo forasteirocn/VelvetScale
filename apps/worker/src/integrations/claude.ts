@@ -660,7 +660,7 @@ export async function analyzeScreenshot(
 ): Promise<VisionClickResult> {
     try {
         const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-4-6',
             max_tokens: 300,
             system: `You are a browser automation assistant. You see a screenshot of a Reddit page.
 Your job is to identify what needs to be clicked or interacted with.
