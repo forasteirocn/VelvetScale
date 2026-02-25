@@ -588,30 +588,64 @@ async function tryNewRedditSubmit(
         } catch { continue; }
     }
 
-    // ======== CORREÇÃO 1: UPLOAD VIA setInputFiles ========
-    // DragEvent via JS não funciona no Shreddit moderno. setInputFiles é confiável.
-    console.log('📤 Uploading imagem via setInputFiles...');
+    // ======== CORREÇÃO 1: UPLOAD — clicar no ícone primeiro, depois setInputFiles ========
+    // A screenshot mostra que a área de upload fica vazia porque o input[type="file"]
+    // só aceita arquivos depois que o dropzone é ativado com um clique.
+    console.log('📤 Uploading imagem...');
     let uploadConfirmed = false;
 
+    // Passo 1: clicar no ícone/botão de upload para ativar o input
+    const uploadTriggerSelectors = [
+        // Ícone de upload (seta para cima) visível na screenshot
+        'button[aria-label*="upload" i]',
+        'button[aria-label*="Upload" i]',
+        '[data-testid="image-upload-button"]',
+        'shreddit-gallery-input button',
+        // Qualquer elemento clicável dentro da área de drop
+        'div[class*="upload"] button',
+        'div[class*="dropzone"] button',
+        // O ícone SVG de upload que aparece na screenshot
+        'svg[icon-name="upload-outline"]',
+        'faceplate-icon[icon-name="upload-outline"]',
+    ];
+
+    for (const sel of uploadTriggerSelectors) {
+        try {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+                await el.click();
+                console.log(`  ✅ Clicou no trigger de upload: ${sel}`);
+                await page.waitForTimeout(500);
+                break;
+            }
+        } catch { continue; }
+    }
+
+    // Passo 2: setInputFiles no input[type="file"]
     try {
         const fileInput = page.locator('input[type="file"]').first();
         await fileInput.setInputFiles(tempImagePath, { timeout: 10000 });
         console.log('  ✅ setInputFiles executado');
     } catch (e) {
-        console.log('  ⚠️ setInputFiles falhou:', e instanceof Error ? e.message.substring(0, 50) : '');
-        // Fallback: tentar em dropzones específicos
-        const dropzoneSelectors = [
-            'div[data-testid="image-upload-area"]',
-            'shreddit-gallery-input',
-            '[class*="dropzone"]',
-        ];
-        for (const sel of dropzoneSelectors) {
-            try {
-                const nearbyInput = page.locator(`${sel} input[type="file"], input[type="file"]`).first();
-                await nearbyInput.setInputFiles(tempImagePath);
-                console.log(`  ✅ Upload via: ${sel}`);
-                break;
-            } catch { continue; }
+        console.log('  ⚠️ setInputFiles direto falhou, tentando forçar visibilidade...');
+        // Forçar visibilidade do input e tentar novamente
+        try {
+            await page.evaluate(() => {
+                const input = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+                if (input) {
+                    input.style.display = 'block';
+                    input.style.opacity = '1';
+                    input.style.position = 'fixed';
+                    input.style.top = '0';
+                    input.style.left = '0';
+                    input.style.zIndex = '9999';
+                }
+            });
+            const fileInput = page.locator('input[type="file"]').first();
+            await fileInput.setInputFiles(tempImagePath, { timeout: 10000 });
+            console.log('  ✅ setInputFiles após forçar visibilidade');
+        } catch (e2) {
+            console.log('  ❌ Upload falhou:', e2 instanceof Error ? e2.message.substring(0, 80) : '');
         }
     }
 
@@ -756,7 +790,7 @@ async function tryNewRedditSubmit(
         // Passo 2: Claude escolhe a opção
         const optionResult = await askClaudeWhatToClick(
             page,
-            'I opened a flair picker on Reddit. Pick the SAFEST and most GENERIC flair for a NSFW photo post (e.g. "No Flair", "General", "OC", "Image", or similar). Tell me the EXACT visible text. List ALL options in allOptions.'
+            'I opened a flair picker on Reddit. I can see flair options as radio buttons or a list. Pick the SAFEST and most GENERIC flair (e.g. "Sem flair", "No Flair", "General", "OC", "Image"). IMPORTANT: Do NOT select "Adicionar", "Add", "Apply", "Cancelar" or "Cancel" — those are action buttons, not flair options. Tell me the EXACT visible text of the FLAIR OPTION to select (the radio button label). List ALL flair options in allOptions.'
         );
 
         if (optionResult.action === 'none' || !optionResult.target) {
@@ -805,10 +839,11 @@ async function tryNewRedditSubmit(
 
         const confirmResult = await askClaudeWhatToClick(
             page,
-            `I just selected a flair option in a Reddit flair modal. I need to SAVE/CONFIRM this selection now.
-Look for a button INSIDE the modal like "Apply", "Save flairs", "Done", "OK", "Salvar", "Aplicar".
-IMPORTANT: Do NOT suggest clicking outside the modal or pressing Escape — that cancels the selection.
-If the modal already closed automatically after selection, say action "none".`
+            `I just selected a flair radio button in a Reddit flair modal. I need to SAVE/CONFIRM this selection now.
+Look for the BLUE confirmation button inside the modal — in Portuguese Reddit it's called "Adicionar", in English it may be "Apply", "Add", "Save flairs", or "Done".
+This button is usually blue/filled and at the bottom-right of the modal.
+Do NOT suggest "Cancelar" or "Cancel". Do NOT suggest clicking outside the modal.
+If the modal already closed automatically, say action "none".`
         );
 
         let confirmed = false;
@@ -851,14 +886,21 @@ If the modal already closed automatically after selection, say action "none".`
         }
 
         // Fallback: selectors conhecidos de confirmação
+        // IMPORTANTE: "Adicionar" é o botão azul de confirmação no Reddit em PT
+        // (não confundir com "Adicionar flair" que ABRE o picker)
         if (!confirmed) {
             const applySelectors = [
-                'shreddit-post-flair-picker button[type="submit"]',
-                'flair-selector button[type="submit"]',
+                // Reddit PT — botão azul de confirmar no modal de flair
+                '[role="dialog"] button:has-text("Adicionar"):not(:has-text("flair")):not(:has-text("tags"))',
+                'dialog button:has-text("Adicionar"):not(:has-text("flair")):not(:has-text("tags"))',
+                // Reddit EN
                 '[role="dialog"] button:has-text("Apply")',
                 '[role="dialog"] button:has-text("Save flairs")',
                 '[role="dialog"] button:has-text("Done")',
-                '[role="dialog"] button:has-text("Salvar")',
+                '[role="dialog"] button:has-text("Add")',
+                // Shreddit components
+                'shreddit-post-flair-picker button[type="submit"]',
+                'flair-selector button[type="submit"]',
                 'dialog button[type="submit"]',
             ];
             for (const sel of applySelectors) {
@@ -866,10 +908,13 @@ If the modal already closed automatically after selection, say action "none".`
                     const btn = page.locator(sel).first();
                     if (!await btn.isVisible({ timeout: 1000 }).catch(() => false)) continue;
                     const btnText = await btn.textContent().catch(() => '');
-                    if (btnText?.toLowerCase().includes('adicionar') || btnText?.toLowerCase().includes('add flair')) continue;
+                    // Ignorar botões que ABREM o picker (contêm "flair" ou "tags" no texto)
+                    const txt = btnText?.toLowerCase() || '';
+                    if (txt.includes('flair') || txt.includes('tags') || txt.includes('adicionar flair') || txt.includes('adicionar tags')) continue;
                     await btn.click({ force: true });
                     confirmed = true;
                     console.log(`  ✅ Confirmado via: "${btnText?.trim()}"`);
+                    await page.waitForTimeout(500);
                     break;
                 } catch { continue; }
             }
