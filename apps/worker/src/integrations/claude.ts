@@ -54,10 +54,13 @@ async function fetchImageAsBase64(imageUrl: string): Promise<{ data: string; med
  * Returns structured data about the photo for smart sub/title selection
  */
 export async function analyzeImage(imageUrl: string): Promise<ImageAnalysis | null> {
+    const maxRetries = 4;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
         const imageData = await fetchImageAsBase64(imageUrl);
         if (!imageData) return null;
 
+        if (attempt > 1) console.log(`🔄 Tentativa ${attempt}/${maxRetries} de análise de imagem...`);
         console.log('🧠 Analisando foto com Claude Vision...');
 
         const response = await anthropic.messages.create({
@@ -116,8 +119,17 @@ Respond with ONLY valid JSON:
             return analysis;
         }
     } catch (err) {
+        const isOverloaded = err instanceof Error && err.message.includes('529');
+        if (isOverloaded && attempt < maxRetries) {
+            const wait = attempt * 10000;
+            console.log(`⏳ API sobrecarregada, aguardando ${wait/1000}s antes de tentar novamente...`);
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+        }
         console.error('⚠️ Image analysis failed:', err instanceof Error ? err.message : err);
+        return null;
     }
+    } // end retry loop
     return null;
 }
 

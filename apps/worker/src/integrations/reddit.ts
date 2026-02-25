@@ -582,7 +582,7 @@ async function tryNewRedditSubmit(
             if (await tab.isVisible({ timeout: 2000 }).catch(() => false)) {
                 await tab.click();
                 console.log(`  ✅ Image tab: ${sel}`);
-                await page.waitForTimeout(1500);
+                await page.waitForTimeout(3000);
                 break;
             }
         } catch { continue; }
