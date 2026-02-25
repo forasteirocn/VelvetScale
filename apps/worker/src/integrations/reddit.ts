@@ -743,11 +743,10 @@ async function tryNewRedditSubmit(
         // Passo 1: verificar se existe botão de abrir flair picker
         // Texto conhecido: "Adicionar flair", "Adicionar tags", "Add flair", "Add tag"
         const flairOpenSelectors = [
+            // APENAS botões de flair real — NÃO incluir "Adicionar tags" / "Add tag"
+            // pois tags de conteúdo (+18) já vêm marcadas automaticamente
             'button:has-text("Adicionar flair")',
-            'button:has-text("Adicionar tags")',
             'button:has-text("Add flair")',
-            'button:has-text("Add tag")',
-            'button:has-text("Flair")',
             '[data-testid="flair-button"]',
             'shreddit-post-flair-picker-trigger',
         ];
