@@ -570,96 +570,142 @@ async function tryNewRedditSubmit(
 
     // ======== SELECIONAR ABA DE IMAGEM ========
     console.log('📷 Selecionando aba de imagem...');
-    const imageTabSelectors = [
-        'button[role="tab"][data-select-value="IMAGE"]',
-        'faceplate-tab[panel-id="IMAGE"]',
-        'button:has-text("Images")',
-        'button:has-text("Imagens")',
-    ];
-    for (const sel of imageTabSelectors) {
+    // Reddit 2026 UI uses role="tab" buttons with text labels
+    const imageTabTexts = ['Imagens e vídeo', 'Images & Video', 'Images', 'Imagens', 'Image & Video'];
+    let imageTabClicked = false;
+    for (const tabText of imageTabTexts) {
         try {
-            const tab = page.locator(sel).first();
-            if (await tab.isVisible({ timeout: 2000 }).catch(() => false)) {
+            const tab = page.locator(`button[role="tab"]`).filter({ hasText: tabText }).first();
+            if (await tab.isVisible({ timeout: 1500 }).catch(() => false)) {
                 await tab.click();
-                console.log(`  ✅ Image tab: ${sel}`);
+                console.log(`  ✅ Image tab: "${tabText}"`);
+                imageTabClicked = true;
                 await page.waitForTimeout(3000);
                 break;
             }
         } catch { continue; }
     }
+    if (!imageTabClicked) {
+        // Fallback: try clicking by URL parameter
+        const currentUrl = page.url();
+        if (!currentUrl.includes('type=IMAGE')) {
+            await page.goto(`https://www.reddit.com/r/${subreddit}/submit?type=IMAGE`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(3000);
+            console.log('  ✅ Image tab via URL parameter');
+        }
+    }
 
-    // ======== CORREÇÃO 1: UPLOAD — clicar no ícone primeiro, depois setInputFiles ========
-    // A screenshot mostra que a área de upload fica vazia porque o input[type="file"]
-    // só aceita arquivos depois que o dropzone é ativado com um clique.
+    // ======== UPLOAD IMAGEM — via filechooser event (Shadow DOM safe) ========
     console.log('📤 Uploading imagem...');
     let uploadConfirmed = false;
 
-    // Passo 1: clicar no ícone/botão de upload para ativar o input
-    const uploadTriggerSelectors = [
-        // Ícone de upload (seta para cima) visível na screenshot
-        'button[aria-label*="upload" i]',
-        'button[aria-label*="Upload" i]',
-        '[data-testid="image-upload-button"]',
-        'shreddit-gallery-input button',
-        // Qualquer elemento clicável dentro da área de drop
-        'div[class*="upload"] button',
-        'div[class*="dropzone"] button',
-        // O ícone SVG de upload que aparece na screenshot
-        'svg[icon-name="upload-outline"]',
-        'faceplate-icon[icon-name="upload-outline"]',
-    ];
-
-    for (const sel of uploadTriggerSelectors) {
-        try {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
-                await el.click();
-                console.log(`  ✅ Clicou no trigger de upload: ${sel}`);
-                await page.waitForTimeout(500);
-                break;
-            }
-        } catch { continue; }
-    }
-
-    // Passo 2: setInputFiles no input[type="file"]
+    // Approach 1: Use Playwright's filechooser event — works across Shadow DOMs
     try {
-        const fileInput = page.locator('input[type="file"]').first();
-        await fileInput.setInputFiles(tempImagePath, { timeout: 10000 });
-        console.log('  ✅ setInputFiles executado');
-    } catch (e) {
-        console.log('  ⚠️ setInputFiles direto falhou, tentando forçar visibilidade...');
-        // Forçar visibilidade do input e tentar novamente
-        try {
-            await page.evaluate(() => {
-                const input = document.querySelector('input[type="file"]') as HTMLInputElement | null;
-                if (input) {
-                    input.style.display = 'block';
-                    input.style.opacity = '1';
-                    input.style.position = 'fixed';
-                    input.style.top = '0';
-                    input.style.left = '0';
-                    input.style.zIndex = '9999';
+        // Find the upload button to click (outside or piercing shadow DOM)
+        const uploadBtnSelectors = [
+            '#device-upload-button',
+            'button:has-text("Carregar ficheiros")',
+            'button:has-text("Upload files")',
+            'button:has-text("Carregar")',
+            'button:has-text("Upload")',
+        ];
+
+        let uploadBtn = null;
+        for (const sel of uploadBtnSelectors) {
+            try {
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    uploadBtn = btn;
+                    console.log(`  ✅ Upload button found: ${sel}`);
+                    break;
                 }
-            });
+            } catch { continue; }
+        }
+
+        if (!uploadBtn) {
+            // Fallback: click on the drop zone area text
+            const dropZoneTexts = ['Arrasta e solta', 'Drag and drop', 'carrega multimédia', 'upload media'];
+            for (const text of dropZoneTexts) {
+                try {
+                    const area = page.getByText(text, { exact: false }).first();
+                    if (await area.isVisible({ timeout: 1500 }).catch(() => false)) {
+                        uploadBtn = area;
+                        console.log(`  ✅ Drop zone found: "${text}"`);
+                        break;
+                    }
+                } catch { continue; }
+            }
+        }
+
+        if (uploadBtn) {
+            // Listen for filechooser BEFORE clicking
+            const [fileChooser] = await Promise.all([
+                page.waitForEvent('filechooser', { timeout: 10000 }),
+                uploadBtn.click(),
+            ]);
+            await fileChooser.setFiles(tempImagePath);
+            console.log('  ✅ Upload via filechooser event');
+        } else {
+            // Fallback: try setInputFiles directly (Playwright pierces some shadow DOMs)
+            console.log('  ⚠️ Upload button not found, trying direct input...');
             const fileInput = page.locator('input[type="file"]').first();
             await fileInput.setInputFiles(tempImagePath, { timeout: 10000 });
-            console.log('  ✅ setInputFiles após forçar visibilidade');
+            console.log('  ✅ Upload via direct setInputFiles');
+        }
+    } catch (e) {
+        console.log('  ⚠️ Primary upload failed, trying force approach...');
+        // Fallback 2: Inject input and set files via evaluate
+        try {
+            await page.evaluate(() => {
+                document.querySelectorAll('input[type="file"]').forEach(input => {
+                    const el = input as HTMLInputElement;
+                    el.style.display = 'block';
+                    el.style.opacity = '1';
+                    el.style.position = 'fixed';
+                    el.style.top = '0';
+                    el.style.left = '0';
+                    el.style.zIndex = '99999';
+                    el.style.width = '200px';
+                    el.style.height = '50px';
+                });
+                // Also check shadow roots
+                const walkShadows = (root: Document | ShadowRoot) => {
+                    root.querySelectorAll('*').forEach(el => {
+                        if (el.shadowRoot) {
+                            el.shadowRoot.querySelectorAll('input[type="file"]').forEach(input => {
+                                const fi = input as HTMLInputElement;
+                                fi.style.display = 'block';
+                                fi.style.opacity = '1';
+                                fi.style.position = 'fixed';
+                                fi.style.top = '60px';
+                                fi.style.left = '0';
+                                fi.style.zIndex = '99999';
+                            });
+                            walkShadows(el.shadowRoot);
+                        }
+                    });
+                };
+                walkShadows(document);
+            });
+            await page.waitForTimeout(500);
+            const fileInput = page.locator('input[type="file"]').first();
+            await fileInput.setInputFiles(tempImagePath, { timeout: 10000 });
+            console.log('  ✅ Upload via forced visibility');
         } catch (e2) {
-            console.log('  ❌ Upload falhou:', e2 instanceof Error ? e2.message.substring(0, 80) : '');
+            console.log('  ❌ All upload methods failed:', e2 instanceof Error ? e2.message.substring(0, 80) : '');
         }
     }
 
     // Aguardar preview — até 45 segundos
     console.log('  ⏳ Aguardando preview da imagem...');
     const uploadPreviewSelectors = [
-        'shreddit-composer img[src*="preview.redd.it"]',
-        'shreddit-composer img[src*="i.redd.it"]',
-        'shreddit-composer img[src*="redditmedia"]',
-        'shreddit-composer faceplate-img',
-        'div[data-testid="image-preview"] img',
-        'shreddit-gallery-carousel img',
+        'img[src*="preview.redd.it"]',
+        'img[src*="i.redd.it"]',
+        'img[src*="redditmedia"]',
+        'faceplate-img',
         'button[aria-label*="Remove"]',
         'button[aria-label*="Remover"]',
+        'button[aria-label*="Eliminar"]',
     ];
 
     for (let attempt = 0; attempt < 45; attempt++) {
@@ -684,9 +730,11 @@ async function tryNewRedditSubmit(
     // ======== PREENCHER TÍTULO ========
     console.log('📝 Preenchendo título...');
     const titleSelectors = [
+        '#innerTextArea',  // Reddit 2026 Shadow DOM title (inside faceplate-textarea-input)
         'textarea[slot="title"]', 'textarea[name="title"]',
-        'textarea[placeholder*="Title"]', 'textarea[placeholder*="Título"]',
-        'input[placeholder*="Title"]', '[data-test-id="post-title"] textarea',
+        'textarea[placeholder*="Título"]', 'textarea[placeholder*="Title"]',
+        'textarea[placeholder*="título"]',
+        'input[placeholder*="Title"]', 'input[placeholder*="Título"]',
     ];
     let titleFilled = false;
     for (const sel of titleSelectors) {
@@ -695,12 +743,24 @@ async function tryNewRedditSubmit(
             if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
                 await input.click();
                 await input.fill(title);
+                // Dispatch events for React/Web Components to pick up the value
                 await page.evaluate((s) => {
-                    const el = document.querySelector(s) as HTMLElement | null;
+                    const walkAndFind = (root: Document | ShadowRoot): HTMLElement | null => {
+                        const el = root.querySelector(s) as HTMLElement | null;
+                        if (el) return el;
+                        for (const child of Array.from(root.querySelectorAll('*'))) {
+                            if (child.shadowRoot) {
+                                const found = walkAndFind(child.shadowRoot);
+                                if (found) return found;
+                            }
+                        }
+                        return null;
+                    };
+                    const el = walkAndFind(document);
                     if (el) {
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
                     }
                 }, sel);
                 titleFilled = true;
@@ -710,211 +770,278 @@ async function tryNewRedditSubmit(
         } catch { continue; }
     }
     if (!titleFilled) {
+        // Fallback: type via keyboard after focusing
+        console.log('  ⚠️ Seletores de título falharam, usando keyboard...');
         await page.keyboard.press('Tab');
         await page.keyboard.type(title, { delay: 30 });
     }
     await page.waitForTimeout(800);
 
-    // ======== NSFW ========
-    if (isNsfw) {
-        console.log('🔞 Marcando NSFW...');
-        const nsfwSelectors = [
-            'button:has-text("NSFW")',
-            'faceplate-switch[input-name="nsfw"]',
-            'button[aria-label*="NSFW"]',
+    // ======== NSFW + FLAIR — via unified "Adicionar tags" modal (Reddit 2026) ========
+    // In the new Reddit UI, NSFW toggle AND flair are BOTH inside the same tags modal
+    console.log('🏷️ Abrindo modal de tags (NSFW + Flair)...');
+
+    async function tryOpenTagsModal(): Promise<boolean> {
+        const tagsButtonSelectors = [
+            '#reddit-post-flair-button',
+            'button:has-text("Adicionar tags")',
+            'button:has-text("Add tags")',
+            'button:has-text("Adicionar flair")',
+            'button:has-text("Add flair")',
         ];
-        for (const sel of nsfwSelectors) {
+
+        for (const sel of tagsButtonSelectors) {
             try {
                 const btn = page.locator(sel).first();
-                if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
                     await btn.click();
-                    console.log(`  ✅ NSFW via: ${sel}`);
-                    break;
+                    console.log(`  🏷️ Tags modal aberto via: ${sel}`);
+                    await page.waitForTimeout(1500);
+                    return true;
                 }
             } catch { continue; }
         }
-        await page.waitForTimeout(500);
+        console.log('  ℹ️ Sem botão de tags — não obrigatório');
+        return false;
     }
 
-    // ======== FLAIR — LÓGICA DOM PURA (sem Claude Vision) ========
-    console.log('🏷️ Verificando flair...');
+    async function tryHandleTagsModal(): Promise<boolean> {
+        const modalOpened = await tryOpenTagsModal();
+        if (!modalOpened) {
+            // Try standalone NSFW button as fallback (some subs may have it outside modal)
+            if (isNsfw) {
+                const nsfwSelectors = [
+                    'button:has-text("NSFW")',
+                    'faceplate-switch[input-name="nsfw"]',
+                    'button[aria-label*="NSFW"]',
+                ];
+                for (const sel of nsfwSelectors) {
+                    try {
+                        const btn = page.locator(sel).first();
+                        if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+                            await btn.click();
+                            console.log(`  ✅ NSFW standalone: ${sel}`);
+                            break;
+                        }
+                    } catch { continue; }
+                }
+            }
+            return false;
+        }
 
-    async function trySelectFlair(): Promise<boolean> {
-        // Passo 1: verificar se existe botão de abrir flair picker
-        // Texto conhecido: "Adicionar flair", "Adicionar tags", "Add flair", "Add tag"
-        const flairOpenSelectors = [
-            // APENAS botões de flair real — NÃO incluir "Adicionar tags" / "Add tag"
-            // pois tags de conteúdo (+18) já vêm marcadas automaticamente
-            'button:has-text("Adicionar flair")',
-            'button:has-text("Add flair")',
-            '[data-testid="flair-button"]',
-            'shreddit-post-flair-picker-trigger',
+        // === Inside the tags modal now ===
+
+        // 1. Toggle NSFW if needed
+        if (isNsfw) {
+            console.log('  🔞 Procurando toggle NSFW no modal...');
+            try {
+                // The NSFW switch is a faceplate-switch-input with label "Conteúdo adulto (18+)" or similar
+                const nsfwToggled = await page.evaluate((): string => {
+                    const walkShadows = (root: Document | ShadowRoot): HTMLElement[] => {
+                        const results: HTMLElement[] = [];
+                        root.querySelectorAll('*').forEach(el => {
+                            // Check for switch inputs
+                            if (el.tagName.toLowerCase().includes('switch') ||
+                                el.getAttribute('input-name') === 'nsfw' ||
+                                el.getAttribute('role') === 'switch') {
+                                results.push(el as HTMLElement);
+                            }
+                            if (el.shadowRoot) {
+                                results.push(...walkShadows(el.shadowRoot));
+                            }
+                        });
+                        return results;
+                    };
+
+                    // Find NSFW-related switches
+                    const switches = walkShadows(document);
+                    for (const sw of switches) {
+                        const parentText = (sw.closest('label') || sw.parentElement)?.textContent?.toLowerCase() || '';
+                        if (parentText.includes('nsfw') || parentText.includes('adulto') || parentText.includes('18+') || parentText.includes('adult')) {
+                            sw.click();
+                            return `switch:${parentText.substring(0, 40)}`;
+                        }
+                    }
+
+                    // Fallback: find any input/checkbox related to NSFW
+                    const inputs = document.querySelectorAll('input[type="checkbox"], input[name*="nsfw"]');
+                    for (const input of Array.from(inputs)) {
+                        const label = input.closest('label')?.textContent || '';
+                        if (label.toLowerCase().includes('nsfw') || label.toLowerCase().includes('adulto') || label.toLowerCase().includes('18+')) {
+                            (input as HTMLInputElement).click();
+                            return `checkbox:${label.substring(0, 40)}`;
+                        }
+                    }
+
+                    return 'not-found';
+                });
+
+                if (nsfwToggled !== 'not-found') {
+                    console.log(`  ✅ NSFW toggled: ${nsfwToggled}`);
+                } else {
+                    // Try Playwright locator as fallback
+                    const nsfwLabels = ['Conteúdo adulto', 'Adult content', 'NSFW', '18+'];
+                    for (const label of nsfwLabels) {
+                        try {
+                            const toggle = page.getByText(label, { exact: false }).first();
+                            if (await toggle.isVisible({ timeout: 500 }).catch(() => false)) {
+                                await toggle.click();
+                                console.log(`  ✅ NSFW via text: "${label}"`);
+                                break;
+                            }
+                        } catch { continue; }
+                    }
+                }
+            } catch (e) {
+                console.log('  ⚠️ NSFW toggle error:', e instanceof Error ? e.message.substring(0, 60) : '');
+            }
+            await page.waitForTimeout(500);
+        }
+
+        // 2. Select flair if available
+        console.log('  🏷️ Verificando opções de flair no modal...');
+        const flairOptions = await page.evaluate((): string[] => {
+            const options: string[] = [];
+            const walkShadows = (root: Document | ShadowRoot) => {
+                // Check radio buttons
+                root.querySelectorAll('input[type="radio"]').forEach(radio => {
+                    const label = radio.closest('label') || root.querySelector(`label[for="${radio.id}"]`);
+                    const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
+                    if (text && !options.includes(text)) options.push(text);
+                });
+                root.querySelectorAll('[role="radio"], [role="option"]').forEach(el => {
+                    const text = (el.textContent || '').trim();
+                    if (text && !options.includes(text)) options.push(text);
+                });
+                // Walk shadow roots
+                root.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) walkShadows(el.shadowRoot);
+                });
+            };
+            walkShadows(document);
+            return options.filter(o =>
+                !['Adicionar', 'Add', 'Apply', 'Cancelar', 'Cancel', 'Done'].includes(o) &&
+                !o.toLowerCase().includes('adulto') && !o.toLowerCase().includes('nsfw') &&
+                !o.toLowerCase().includes('spoiler') && o.length < 100
+            );
+        });
+
+        if (flairOptions.length > 0) {
+            console.log(`  📋 Flair options: ${flairOptions.join(', ')}`);
+
+            // Choose best flair
+            const preferredTexts = [
+                'sem flair', 'no flair', 'none', 'nenhum', 'nenhuma',
+                'general', 'oc', 'original content', 'image', 'photo',
+            ];
+            let chosen = flairOptions[0];
+            for (const preferred of preferredTexts) {
+                const match = flairOptions.find(o => o.toLowerCase().includes(preferred));
+                if (match) { chosen = match; break; }
+            }
+
+            console.log(`  🏷️ Escolhendo flair: "${chosen}"`);
+
+            // Click the chosen flair option
+            const clicked = await page.evaluate((targetText: string) => {
+                const walkAndClick = (root: Document | ShadowRoot): string | null => {
+                    // Radio buttons
+                    for (const radio of Array.from(root.querySelectorAll('input[type="radio"]'))) {
+                        const label = radio.closest('label') || root.querySelector(`label[for="${(radio as HTMLInputElement).id}"]`);
+                        const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
+                        if (text === targetText) { (radio as HTMLInputElement).click(); return `radio:${text}`; }
+                    }
+                    for (const el of Array.from(root.querySelectorAll('[role="radio"], [role="option"], li, label'))) {
+                        const text = (el.textContent || '').trim();
+                        if (text === targetText) { (el as HTMLElement).click(); return `role:${text}`; }
+                    }
+                    // Walk shadows
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) {
+                            const result = walkAndClick(el.shadowRoot);
+                            if (result) return result;
+                        }
+                    }
+                    return null;
+                };
+                return walkAndClick(document);
+            }, chosen);
+
+            if (clicked) {
+                console.log(`  ✅ Flair selecionado: ${clicked}`);
+            } else {
+                console.log('  ⚠️ Não conseguiu selecionar flair via DOM');
+            }
+            await page.waitForTimeout(500);
+        } else {
+            console.log('  ℹ️ Sem opções de flair neste sub');
+        }
+
+        // 3. Click Apply/Adicionar button to confirm and close modal
+        console.log('  ✅ Confirmando modal...');
+        const applySelectors = [
+            '#post-flair-modal-apply-button',
+            'button:has-text("Adicionar")',
+            'button:has-text("Apply")',
+            'button:has-text("Add")',
+            'button:has-text("Done")',
+            'button:has-text("Save")',
         ];
 
-        let flairBtnFound = false;
-        for (const sel of flairOpenSelectors) {
+        let modalConfirmed = false;
+        for (const sel of applySelectors) {
             try {
                 const btn = page.locator(sel).first();
                 if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
-                    await btn.click();
-                    console.log(`  🏷️ Flair picker aberto via: ${sel}`);
-                    flairBtnFound = true;
-                    await page.waitForTimeout(1000);
-                    break;
+                    if (!await btn.isDisabled().catch(() => false)) {
+                        await btn.click();
+                        console.log(`  ✅ Modal confirmado via: ${sel}`);
+                        modalConfirmed = true;
+                        break;
+                    }
                 }
             } catch { continue; }
         }
 
-        if (!flairBtnFound) {
-            console.log('  ℹ️ Sem botão de flair — não obrigatório');
-            return false;
-        }
-
-        // Passo 2: ler radio buttons do DOM diretamente (sem screenshot)
-        // O modal tem: input[type="radio"] ou [role="radio"] para cada opção de flair
-        const flairOptions = await page.evaluate((): string[] => {
-            const options: string[] = [];
-
-            // Tentar radio buttons nativos
-            const radios = document.querySelectorAll('input[type="radio"]');
-            for (const radio of Array.from(radios)) {
-                const label = radio.closest('label') || document.querySelector(`label[for="${radio.id}"]`);
-                const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
-                if (text && !options.includes(text)) options.push(text);
-            }
-
-            // Tentar [role="radio"] se não achou nativos
-            if (options.length === 0) {
-                const roleRadios = document.querySelectorAll('[role="radio"], [role="option"]');
-                for (const el of Array.from(roleRadios)) {
-                    const text = (el.textContent || '').trim();
-                    if (text && !options.includes(text)) options.push(text);
-                }
-            }
-
-            // Tentar li dentro do modal
-            if (options.length === 0) {
-                const dialog = document.querySelector('dialog, [role="dialog"]');
-                if (dialog) {
-                    for (const li of Array.from(dialog.querySelectorAll('li, label'))) {
-                        const text = (li.textContent || '').trim();
-                        // Filtrar botões de ação
-                        if (text && !['Adicionar', 'Add', 'Apply', 'Cancelar', 'Cancel', 'Done'].includes(text)) {
-                            options.push(text);
+        if (!modalConfirmed) {
+            // Fallback: try DOM-based click on apply/add button
+            const confirmed = await page.evaluate((): string | null => {
+                const confirmTexts = ['Adicionar', 'Add', 'Apply', 'Done', 'OK'];
+                const walkShadows = (root: Document | ShadowRoot): string | null => {
+                    for (const btn of Array.from(root.querySelectorAll('button'))) {
+                        const text = btn.textContent?.trim() || '';
+                        for (const ct of confirmTexts) {
+                            if (text === ct || (text.includes(ct) && !text.toLowerCase().includes('flair') && !text.toLowerCase().includes('tags'))) {
+                                (btn as HTMLButtonElement).click();
+                                return text;
+                            }
                         }
                     }
-                }
-            }
-
-            return options;
-        });
-
-        console.log(`  📋 Opções de flair encontradas: ${flairOptions.join(', ') || 'nenhuma'}`);
-
-        if (flairOptions.length === 0) {
-            // Modal abriu mas sem opções detectáveis — fechar e continuar
-            await page.keyboard.press('Escape').catch(() => { });
-            return false;
-        }
-
-        // Passo 3: escolher a melhor opção
-        // Prioridade: "Sem flair" > "No Flair" > primeira opção disponível
-        const preferredTexts = [
-            'sem flair', 'no flair', 'none', 'nenhum', 'nenhuma',
-            'general', 'oc', 'original content', 'image', 'photo',
-        ];
-        let chosen = flairOptions[0]; // fallback: primeira opção
-        for (const preferred of preferredTexts) {
-            const match = flairOptions.find(o => o.toLowerCase().includes(preferred));
-            if (match) { chosen = match; break; }
-        }
-
-        console.log(`  🏷️ Escolhendo flair: "${chosen}"`);
-
-        // Passo 4: clicar na opção escolhida via DOM
-        const clicked = await page.evaluate((targetText: string) => {
-            // Buscar radio nativo
-            const radios = document.querySelectorAll('input[type="radio"]');
-            for (const radio of Array.from(radios)) {
-                const label = radio.closest('label') || document.querySelector(`label[for="${(radio as HTMLInputElement).id}"]`);
-                const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
-                if (text === targetText) {
-                    (radio as HTMLInputElement).click();
-                    return `radio:${text}`;
-                }
-            }
-            // Buscar [role="radio"] ou [role="option"]
-            const roleEls = document.querySelectorAll('[role="radio"], [role="option"], li, label');
-            for (const el of Array.from(roleEls)) {
-                const text = (el.textContent || '').trim();
-                if (text === targetText) {
-                    (el as HTMLElement).click();
-                    return `role:${text}`;
-                }
-            }
-            return null;
-        }, chosen);
-
-        if (!clicked) {
-            console.log('  ⚠️ Não conseguiu clicar na opção via DOM');
-            await page.keyboard.press('Escape').catch(() => { });
-            return false;
-        }
-
-        console.log(`  ✅ Opção selecionada: ${clicked}`);
-        await page.waitForTimeout(500);
-
-        // Passo 5: clicar no botão de confirmação (Adicionar / Apply / Add)
-        // NUNCA usar Escape ou clicar fora — isso cancela a seleção
-        const confirmed = await page.evaluate((): string | null => {
-            const confirmTexts = ['Adicionar', 'Add', 'Apply', 'Save flairs', 'Done', 'OK', 'Confirm'];
-            const dialog = document.querySelector('dialog, [role="dialog"]');
-            const searchRoot = dialog || document;
-
-            for (const text of confirmTexts) {
-                const buttons = Array.from(searchRoot.querySelectorAll('button'));
-                for (const btn of buttons) {
-                    const btnText = btn.textContent?.trim() || '';
-                    // Match exato ou contém — mas NÃO deve conter "flair" ou "tags" (esses ABREM o picker)
-                    if (btnText === text || (btnText.includes(text) && !btnText.toLowerCase().includes('flair') && !btnText.toLowerCase().includes('tags'))) {
-                        btn.click();
-                        return btnText;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) {
+                            const result = walkShadows(el.shadowRoot);
+                            if (result) return result;
+                        }
                     }
-                }
-            }
-            return null;
-        });
+                    return null;
+                };
+                return walkShadows(document);
+            });
 
-        if (confirmed) {
-            console.log(`  ✅ Flair confirmado via botão: "${confirmed}"`);
-        } else {
-            // Último recurso: Tab + Enter para focar e confirmar o botão
-            console.log('  ⚠️ Botão de confirmação não encontrado via DOM, tentando Tab+Enter...');
-            await page.keyboard.press('Tab');
-            await page.waitForTimeout(200);
-            await page.keyboard.press('Enter');
+            if (confirmed) {
+                console.log(`  ✅ Modal confirmado via DOM: "${confirmed}"`);
+                modalConfirmed = true;
+            } else {
+                console.log('  ⚠️ Fechando modal via Escape');
+                await page.keyboard.press('Escape').catch(() => { });
+            }
         }
 
         await page.waitForTimeout(800);
-
-        // Verificar se o modal fechou (confirmação bem-sucedida)
-        const modalStillOpen = await page.evaluate(() =>
-            !!document.querySelector('dialog[open], [role="dialog"]')
-        );
-
-        if (modalStillOpen) {
-            console.log('  ⚠️ Modal ainda aberto — tentando Escape como último recurso');
-            await page.keyboard.press('Escape').catch(() => { });
-            await page.waitForTimeout(500);
-        } else {
-            console.log('  ✅ Modal fechou — flair salvo com sucesso');
-        }
-
         return true;
     }
 
-    await trySelectFlair();
-    await page.waitForTimeout(500);
+    await tryHandleTagsModal();
 
     // Verificar imagem ainda presente após flair
     console.log('🔍 Verificando imagem após flair...');
@@ -942,13 +1069,19 @@ async function tryNewRedditSubmit(
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(500);
 
-    // Disparar validação do React
+    // Disparar validação do React (com composed: true para atravessar Shadow DOM)
     await page.evaluate(() => {
-        document.querySelectorAll('textarea, input').forEach(el => {
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            el.dispatchEvent(new Event('blur', { bubbles: true }));
-        });
+        const dispatchEvents = (root: Document | ShadowRoot) => {
+            root.querySelectorAll('textarea, input').forEach(el => {
+                el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+            });
+            root.querySelectorAll('*').forEach(el => {
+                if (el.shadowRoot) dispatchEvents(el.shadowRoot);
+            });
+        };
+        dispatchEvents(document);
     });
     await page.waitForTimeout(500);
 
@@ -973,19 +1106,25 @@ async function tryNewRedditSubmit(
                 if (!await btn.isDisabled().catch(() => true)) break;
 
                 if (i === 8) {
-                    // Submit ainda desabilitado — tentar flair de novo via DOM
-                    console.log('  🏷️ Submit desabilitado — tentando flair de novo...');
-                    await trySelectFlair();
+                    // Submit ainda desabilitado — tentar tags modal de novo
+                    console.log('  🏷️ Submit desabilitado — tentando tags modal de novo...');
+                    await tryHandleTagsModal();
                     await page.waitForTimeout(1000);
                 }
 
                 if (i % 5 === 0 && i > 0) {
                     await page.evaluate(() => {
-                        document.querySelectorAll('textarea, input').forEach(el => {
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                            el.dispatchEvent(new Event('blur', { bubbles: true }));
-                        });
+                        const dispatchInShadows = (root: Document | ShadowRoot) => {
+                            root.querySelectorAll('textarea, input').forEach(el => {
+                                el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                                el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+                            });
+                            root.querySelectorAll('*').forEach(el => {
+                                if (el.shadowRoot) dispatchInShadows(el.shadowRoot);
+                            });
+                        };
+                        dispatchInShadows(document);
                         document.body.click();
                     });
                 }
