@@ -669,22 +669,21 @@ async function tryNewRedditSubmit(
                     el.style.height = '50px';
                 });
                 // Also check shadow roots
-                const walkShadows = (root: Document | ShadowRoot) => {
-                    root.querySelectorAll('*').forEach(el => {
+                function walkShadows(root: any): void {
+                    root.querySelectorAll('*').forEach((el: any) => {
                         if (el.shadowRoot) {
-                            el.shadowRoot.querySelectorAll('input[type="file"]').forEach(input => {
-                                const fi = input as HTMLInputElement;
-                                fi.style.display = 'block';
-                                fi.style.opacity = '1';
-                                fi.style.position = 'fixed';
-                                fi.style.top = '60px';
-                                fi.style.left = '0';
-                                fi.style.zIndex = '99999';
+                            el.shadowRoot.querySelectorAll('input[type="file"]').forEach((input: any) => {
+                                input.style.display = 'block';
+                                input.style.opacity = '1';
+                                input.style.position = 'fixed';
+                                input.style.top = '60px';
+                                input.style.left = '0';
+                                input.style.zIndex = '99999';
                             });
                             walkShadows(el.shadowRoot);
                         }
                     });
-                };
+                }
                 walkShadows(document);
             });
             await page.waitForTimeout(500);
@@ -745,18 +744,18 @@ async function tryNewRedditSubmit(
                 await input.fill(title);
                 // Dispatch events for React/Web Components to pick up the value
                 await page.evaluate((s) => {
-                    const walkAndFind = (root: Document | ShadowRoot): HTMLElement | null => {
-                        const el = root.querySelector(s) as HTMLElement | null;
+                    function walkAndFind(root: any): HTMLElement | null {
+                        var el = root.querySelector(s) as HTMLElement | null;
                         if (el) return el;
-                        for (const child of Array.from(root.querySelectorAll('*'))) {
-                            if (child.shadowRoot) {
-                                const found = walkAndFind(child.shadowRoot);
+                        for (var _i = 0, _a = Array.from(root.querySelectorAll('*')) as any[]; _i < _a.length; _i++) {
+                            if (_a[_i].shadowRoot) {
+                                var found: HTMLElement | null = walkAndFind(_a[_i].shadowRoot);
                                 if (found) return found;
                             }
                         }
                         return null;
-                    };
-                    const el = walkAndFind(document);
+                    }
+                    var el = walkAndFind(document);
                     if (el) {
                         el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
@@ -837,39 +836,38 @@ async function tryNewRedditSubmit(
             try {
                 // The NSFW switch is a faceplate-switch-input with label "Conteúdo adulto (18+)" or similar
                 const nsfwToggled = await page.evaluate((): string => {
-                    const walkShadows = (root: Document | ShadowRoot): HTMLElement[] => {
-                        const results: HTMLElement[] = [];
-                        root.querySelectorAll('*').forEach(el => {
-                            // Check for switch inputs
+                    function walkShadows(root: any): any[] {
+                        var results: any[] = [];
+                        root.querySelectorAll('*').forEach(function (el: any) {
                             if (el.tagName.toLowerCase().includes('switch') ||
                                 el.getAttribute('input-name') === 'nsfw' ||
                                 el.getAttribute('role') === 'switch') {
-                                results.push(el as HTMLElement);
+                                results.push(el);
                             }
                             if (el.shadowRoot) {
-                                results.push(...walkShadows(el.shadowRoot));
+                                results.push.apply(results, walkShadows(el.shadowRoot));
                             }
                         });
                         return results;
-                    };
+                    }
 
-                    // Find NSFW-related switches
-                    const switches = walkShadows(document);
-                    for (const sw of switches) {
-                        const parentText = (sw.closest('label') || sw.parentElement)?.textContent?.toLowerCase() || '';
+                    var switches = walkShadows(document);
+                    for (var _i = 0; _i < switches.length; _i++) {
+                        var sw = switches[_i];
+                        var parentText = ((sw.closest('label') || sw.parentElement) || {}).textContent || '';
+                        parentText = parentText.toLowerCase();
                         if (parentText.includes('nsfw') || parentText.includes('adulto') || parentText.includes('18+') || parentText.includes('adult')) {
                             sw.click();
                             return `switch:${parentText.substring(0, 40)}`;
                         }
                     }
 
-                    // Fallback: find any input/checkbox related to NSFW
-                    const inputs = document.querySelectorAll('input[type="checkbox"], input[name*="nsfw"]');
-                    for (const input of Array.from(inputs)) {
-                        const label = input.closest('label')?.textContent || '';
+                    var inputs = document.querySelectorAll('input[type="checkbox"], input[name*="nsfw"]');
+                    for (var _j = 0; _j < inputs.length; _j++) {
+                        var label = ((inputs[_j] as any).closest('label') || {} as any).textContent || '';
                         if (label.toLowerCase().includes('nsfw') || label.toLowerCase().includes('adulto') || label.toLowerCase().includes('18+')) {
-                            (input as HTMLInputElement).click();
-                            return `checkbox:${label.substring(0, 40)}`;
+                            (inputs[_j] as any).click();
+                            return 'checkbox:' + label.substring(0, 40);
                         }
                     }
 
@@ -902,19 +900,17 @@ async function tryNewRedditSubmit(
         console.log('  🏷️ Verificando opções de flair no modal...');
         const flairOptions = await page.evaluate((): string[] => {
             const options: string[] = [];
-            const walkShadows = (root: Document | ShadowRoot) => {
-                // Check radio buttons
-                root.querySelectorAll('input[type="radio"]').forEach(radio => {
-                    const label = radio.closest('label') || root.querySelector(`label[for="${radio.id}"]`);
-                    const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
+            function walkShadows(root: any): void {
+                root.querySelectorAll('input[type="radio"]').forEach(function (radio: any) {
+                    var label = radio.closest('label') || root.querySelector('label[for="' + radio.id + '"]');
+                    var text = ((label ? label.textContent : '') || radio.value || '').trim();
                     if (text && !options.includes(text)) options.push(text);
                 });
-                root.querySelectorAll('[role="radio"], [role="option"]').forEach(el => {
-                    const text = (el.textContent || '').trim();
+                root.querySelectorAll('[role="radio"], [role="option"]').forEach(function (el: any) {
+                    var text = (el.textContent || '').trim();
                     if (text && !options.includes(text)) options.push(text);
                 });
-                // Walk shadow roots
-                root.querySelectorAll('*').forEach(el => {
+                root.querySelectorAll('*').forEach(function (el: any) {
                     if (el.shadowRoot) walkShadows(el.shadowRoot);
                 });
             };
@@ -944,26 +940,28 @@ async function tryNewRedditSubmit(
 
             // Click the chosen flair option
             const clicked = await page.evaluate((targetText: string) => {
-                const walkAndClick = (root: Document | ShadowRoot): string | null => {
-                    // Radio buttons
-                    for (const radio of Array.from(root.querySelectorAll('input[type="radio"]'))) {
-                        const label = radio.closest('label') || root.querySelector(`label[for="${(radio as HTMLInputElement).id}"]`);
-                        const text = (label?.textContent || (radio as HTMLInputElement).value || '').trim();
-                        if (text === targetText) { (radio as HTMLInputElement).click(); return `radio:${text}`; }
+                function walkAndClick(root: any): string | null {
+                    var radios = Array.from(root.querySelectorAll('input[type="radio"]')) as any[];
+                    for (var i = 0; i < radios.length; i++) {
+                        var radio = radios[i];
+                        var label = radio.closest('label') || root.querySelector('label[for="' + radio.id + '"]');
+                        var text = ((label ? label.textContent : '') || radio.value || '').trim();
+                        if (text === targetText) { radio.click(); return 'radio:' + text; }
                     }
-                    for (const el of Array.from(root.querySelectorAll('[role="radio"], [role="option"], li, label'))) {
-                        const text = (el.textContent || '').trim();
-                        if (text === targetText) { (el as HTMLElement).click(); return `role:${text}`; }
+                    var els = Array.from(root.querySelectorAll('[role="radio"], [role="option"], li, label')) as any[];
+                    for (var j = 0; j < els.length; j++) {
+                        var text2 = (els[j].textContent || '').trim();
+                        if (text2 === targetText) { els[j].click(); return 'role:' + text2; }
                     }
-                    // Walk shadows
-                    for (const el of Array.from(root.querySelectorAll('*'))) {
-                        if (el.shadowRoot) {
-                            const result = walkAndClick(el.shadowRoot);
+                    var allEls = Array.from(root.querySelectorAll('*')) as any[];
+                    for (var k = 0; k < allEls.length; k++) {
+                        if (allEls[k].shadowRoot) {
+                            var result: string | null = walkAndClick(allEls[k].shadowRoot);
                             if (result) return result;
                         }
                     }
                     return null;
-                };
+                }
                 return walkAndClick(document);
             }, chosen);
 
@@ -1007,19 +1005,21 @@ async function tryNewRedditSubmit(
             // Fallback: try DOM-based click on apply/add button
             const confirmed = await page.evaluate((): string | null => {
                 const confirmTexts = ['Adicionar', 'Add', 'Apply', 'Done', 'OK'];
-                const walkShadows = (root: Document | ShadowRoot): string | null => {
-                    for (const btn of Array.from(root.querySelectorAll('button'))) {
-                        const text = btn.textContent?.trim() || '';
-                        for (const ct of confirmTexts) {
-                            if (text === ct || (text.includes(ct) && !text.toLowerCase().includes('flair') && !text.toLowerCase().includes('tags'))) {
-                                (btn as HTMLButtonElement).click();
+                function walkShadows(root: any): string | null {
+                    var buttons = Array.from(root.querySelectorAll('button')) as any[];
+                    for (var i = 0; i < buttons.length; i++) {
+                        var text = (buttons[i].textContent || '').trim();
+                        for (var j = 0; j < confirmTexts.length; j++) {
+                            if (text === confirmTexts[j] || (text.includes(confirmTexts[j]) && text.toLowerCase().indexOf('flair') === -1 && text.toLowerCase().indexOf('tags') === -1)) {
+                                buttons[i].click();
                                 return text;
                             }
                         }
                     }
-                    for (const el of Array.from(root.querySelectorAll('*'))) {
-                        if (el.shadowRoot) {
-                            const result = walkShadows(el.shadowRoot);
+                    var allEls = Array.from(root.querySelectorAll('*')) as any[];
+                    for (var k = 0; k < allEls.length; k++) {
+                        if (allEls[k].shadowRoot) {
+                            var result = walkShadows(allEls[k].shadowRoot);
                             if (result) return result;
                         }
                     }
@@ -1071,16 +1071,16 @@ async function tryNewRedditSubmit(
 
     // Disparar validação do React (com composed: true para atravessar Shadow DOM)
     await page.evaluate(() => {
-        const dispatchEvents = (root: Document | ShadowRoot) => {
-            root.querySelectorAll('textarea, input').forEach(el => {
+        function dispatchEvents(root: any): void {
+            root.querySelectorAll('textarea, input').forEach((el: any) => {
                 el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
                 el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
             });
-            root.querySelectorAll('*').forEach(el => {
+            root.querySelectorAll('*').forEach((el: any) => {
                 if (el.shadowRoot) dispatchEvents(el.shadowRoot);
             });
-        };
+        }
         dispatchEvents(document);
     });
     await page.waitForTimeout(500);
@@ -1114,16 +1114,16 @@ async function tryNewRedditSubmit(
 
                 if (i % 5 === 0 && i > 0) {
                     await page.evaluate(() => {
-                        const dispatchInShadows = (root: Document | ShadowRoot) => {
-                            root.querySelectorAll('textarea, input').forEach(el => {
+                        function dispatchInShadows(root: any): void {
+                            root.querySelectorAll('textarea, input').forEach((el: any) => {
                                 el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                                 el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
                                 el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
                             });
-                            root.querySelectorAll('*').forEach(el => {
+                            root.querySelectorAll('*').forEach((el: any) => {
                                 if (el.shadowRoot) dispatchInShadows(el.shadowRoot);
                             });
-                        };
+                        }
                         dispatchInShadows(document);
                         document.body.click();
                     });
