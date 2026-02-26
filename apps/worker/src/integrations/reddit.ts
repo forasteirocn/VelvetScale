@@ -490,6 +490,12 @@ async function tryNewRedditSubmit(
         return { submitted: false, error: 'login_required' };
     }
 
+    // ======== POLYFILL: define __name in browser context ========
+    // tsx/esbuild adds __name() decorator to function declarations during transpilation,
+    // but __name only exists at module scope, not in the browser's page.evaluate() context.
+    // This no-op polyfill prevents "ReferenceError: __name is not defined" errors.
+    await page.evaluate('window.__name = function(fn) { return fn; }');
+
     // ======== CHECK FOR BLOCKING MODALS ========
     console.log('🔍 Checking for blocking modals...');
     const pageText = await page.textContent('body').catch(() => '') || '';
