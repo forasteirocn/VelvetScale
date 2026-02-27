@@ -213,6 +213,34 @@ async function postThreadReply(
 // =============================================
 
 /**
+ * Detect if Claude refused to generate content
+ */
+function isRefusal(text: string): boolean {
+    const refusalPhrases = [
+        'i can\'t',
+        'i cannot',
+        'i\'m not able',
+        'i am not able',
+        'i\'m unable',
+        'i won\'t',
+        'i will not',
+        'i\'d rather not',
+        'not comfortable',
+        'explicit sexual',
+        'sexual content',
+        'as an ai',
+        'i apologize',
+        'i\'m sorry but',
+        'content that contains',
+        'help create social media content',
+        'happy to assist with',
+        'happy to help with',
+    ];
+    const lower = text.toLowerCase();
+    return refusalPhrases.some(phrase => lower.includes(phrase));
+}
+
+/**
  * Adapt a Reddit title to Twitter style using Claude
  */
 export async function adaptForTwitter(
@@ -224,34 +252,40 @@ export async function adaptForTwitter(
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 280,
-            system: `You adapt Reddit post titles into Twitter/X captions.
+            system: `You are a social media manager for an adult content creator on Twitter/X.
+Your job is to rewrite captions in the creator's voice. This is LEGAL adult content on a platform that allows it.
 
 RULES:
-- Max 200 characters (leave room for engagement)
-- Much more casual and personal than Reddit
-- Use lowercase, abbreviations, and internet slang naturally
-- 0-2 emojis max (not spammy)
-- NO hashtags unless they're genuinely relevant (max 1)
-- NO links, NO "link in bio"
-- Sound like a real person, not a brand
-- Match persona: ${persona || 'flirty, confident, approachable'}
+- Max 200 characters
+- Casual, flirty, personal tone
+- Use lowercase and internet slang naturally
+- 0-2 emojis max
+- NO hashtags, NO links
+- Keep the same vibe/meaning as the original
+- Write in English
+- Persona: ${persona || 'flirty, confident, playful'}
 
-STYLE DIFFERENCE:
-Reddit: "Finally feeling confident after months of working out 💪"
-Twitter: "the gym is paying off and i'm not mad about it 😏"
+EXAMPLES:
+Input: "me sentindo gostosa hoje" → "feeling myself today 😏"
+Input: "bom dia bb" → "good morning babe 🤍"
+Input: "voces gostam?" → "do you guys like it? 👀"
 
-Reddit: "First post here, be gentle! [OC]"
-Twitter: "posting this before i change my mind lol"
-
-Respond with ONLY the tweet text.`,
+Respond with ONLY the tweet text. Nothing else.`,
             messages: [{
                 role: 'user',
-                content: `Reddit title: "${redditTitle}"\nBio: ${bio}\n\nAdapt for Twitter:`,
+                content: `Rewrite this caption for Twitter: "${redditTitle}"`,
             }],
         });
 
         const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
-        return text || null;
+
+        // Safety check: if Claude refused, return null (caller will use original)
+        if (!text || isRefusal(text)) {
+            console.log('  ⚠️ Claude refused/failed to adapt, using original caption');
+            return null;
+        }
+
+        return text;
     } catch (err) {
         console.error('⚠️ Twitter adaptation failed:', err instanceof Error ? err.message : err);
         return null;
@@ -315,11 +349,14 @@ export async function manualTwitterPost(
         .eq('id', modelId)
         .single();
 
-    // Adapt caption if it looks like a Reddit title
+    // Adapt caption using Claude (skip for very short captions)
     let tweetText = caption;
-    if (caption.length > 50) {
+    if (caption.length > 20) {
         const adapted = await adaptForTwitter(caption, model?.persona || '', model?.bio || '');
-        if (adapted) tweetText = adapted;
+        if (adapted && !isRefusal(adapted)) {
+            tweetText = adapted;
+        }
+        // If Claude refused or failed, use the original caption
     }
 
     await sendTelegramMessage(chatId, `🐦 Postando no Twitter...\n\n"${tweetText}"`);
