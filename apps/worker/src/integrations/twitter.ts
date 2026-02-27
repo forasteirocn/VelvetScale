@@ -309,36 +309,17 @@ export async function checkNewDMs(
 }
 
 // =============================================
-// Media Upload
+// Media Upload (v2 API — OAuth 2.0)
 // =============================================
 
-/**
- * Get an OAuth 1.0a client specifically for media upload
- * v1.1 media upload ONLY works with OAuth 1.0a, not OAuth 2.0
- */
-function getMediaUploadClient(): TwitterApi | null {
-    const appKey = process.env.TWITTER_CONSUMER_KEY;
-    const appSecret = process.env.TWITTER_CONSUMER_SECRET;
-    const accessToken = process.env.TWITTER_ACCESS_TOKEN;
-    const accessSecret = process.env.TWITTER_ACCESS_SECRET;
-
-    if (!appKey || !appSecret || !accessToken || !accessSecret) {
-        console.log('  ⚠️ OAuth 1.0a credentials not in .env — media upload unavailable');
-        return null;
-    }
-
-    return new TwitterApi({ appKey, appSecret, accessToken, accessSecret });
-}
+const TWITTER_UPLOAD_BASE = 'https://api.twitter.com/2/media/upload';
 
 /**
- * Upload media (photo) to Twitter
- * Uses v1.1 media upload API with OAuth 1.0a, returns media_id for v2 tweet
+ * Upload media (photo) to Twitter using v2 API
+ * 3-step process: initialize → append → finalize
+ * Uses OAuth 2.0 access token (same as tweet posting)
  */
-async function uploadMedia(_oauth2Client: TwitterApi, photoUrl: string): Promise<string | undefined> {
-    // Media upload requires OAuth 1.0a (v1.1 API)
-    const mediaClient = getMediaUploadClient();
-    if (!mediaClient) return undefined;
-
+async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string | undefined> {
     try {
         // Download the image first
         const response = await axios.get(photoUrl, {
@@ -347,19 +328,86 @@ async function uploadMedia(_oauth2Client: TwitterApi, photoUrl: string): Promise
         });
 
         const buffer = Buffer.from(response.data);
-        const contentType = response.headers['content-type'] || 'image/jpeg';
+        let contentType = response.headers['content-type'] || 'image/jpeg';
 
-        console.log(`  📸 Uploading media (${(buffer.length / 1024).toFixed(0)}KB, ${contentType})...`);
+        // Normalize content type
+        if (contentType === 'application/octet-stream' || !contentType.startsWith('image/')) {
+            contentType = 'image/jpeg';
+        }
 
-        // Upload to Twitter via v1.1 API with OAuth 1.0a
-        const mediaId = await mediaClient.v1.uploadMedia(buffer, {
-            mimeType: contentType,
-        });
+        const totalBytes = buffer.length;
+        console.log(`  📸 Uploading media v2 (${(totalBytes / 1024).toFixed(0)}KB, ${contentType})...`);
 
-        console.log(`  📸 Media uploaded: ${mediaId}`);
+        // Get the bearer token from the client
+        // The client stores the token internally, we need to extract it
+        const bearerToken = (client as any)._accessToken || (client as any).token;
+
+        if (!bearerToken) {
+            console.error('  ⚠️ Could not extract bearer token from client');
+            return undefined;
+        }
+
+        const headers = {
+            'Authorization': `Bearer ${bearerToken}`,
+        };
+
+        // Step 1: Initialize
+        const initResponse = await axios.post(
+            `${TWITTER_UPLOAD_BASE}/initialize`,
+            {
+                total_bytes: totalBytes,
+                media_type: contentType,
+            },
+            {
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                timeout: 30000,
+            }
+        );
+
+        const mediaId = initResponse.data?.media_id_string || initResponse.data?.id;
+        if (!mediaId) {
+            console.error('  ⚠️ No media_id in initialize response:', JSON.stringify(initResponse.data));
+            return undefined;
+        }
+
+        console.log(`  📸 Media initialized: ${mediaId}`);
+
+        // Step 2: Append (upload the data in one chunk for images < 5MB)
+        const formData = new FormData();
+        formData.append('media_data', buffer.toString('base64'));
+
+        await axios.post(
+            `${TWITTER_UPLOAD_BASE}/${mediaId}/append`,
+            formData,
+            {
+                headers: {
+                    ...headers,
+                    'Content-Type': 'multipart/form-data',
+                },
+                params: { segment_index: 0 },
+                timeout: 60000,
+            }
+        );
+
+        console.log(`  📸 Media data appended`);
+
+        // Step 3: Finalize
+        const finalizeResponse = await axios.post(
+            `${TWITTER_UPLOAD_BASE}/${mediaId}/finalize`,
+            {},
+            {
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                timeout: 30000,
+            }
+        );
+
+        console.log(`  📸 Media uploaded successfully: ${mediaId}`);
         return mediaId;
-    } catch (err) {
-        console.error('⚠️ Media upload failed:', err instanceof Error ? err.message : err);
+    } catch (err: any) {
+        const errMsg = err?.response?.data
+            ? JSON.stringify(err.response.data)
+            : (err instanceof Error ? err.message : String(err));
+        console.error(`⚠️ Media upload failed: ${errMsg}`);
         return undefined;
     }
 }

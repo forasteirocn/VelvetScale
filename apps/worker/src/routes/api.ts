@@ -187,7 +187,7 @@ apiRouter.get('/auth/twitter/url', async (req: Request, res: Response) => {
         const { url, codeVerifier, state } = twitterClient.generateOAuth2AuthLink(
             callbackUrl,
             {
-                scope: ['tweet.read', 'tweet.write', 'users.read', 'dm.read', 'dm.write', 'offline.access'],
+                scope: ['tweet.read', 'tweet.write', 'users.read', 'dm.read', 'dm.write', 'media.write', 'offline.access'],
             }
         );
 
