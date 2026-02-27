@@ -13,20 +13,17 @@ import axios from 'axios';
 // =============================================
 
 // Cache of authenticated clients per model
-const clientCache: Map<string, { client: TwitterApi; expiresAt: number }> = new Map();
+const clientCache: Map<string, { client: TwitterApi; rawToken: string; expiresAt: number }> = new Map();
 
 /**
  * Get an authenticated Twitter client for a model
- *
- * Strategy:
- * 1. If model has tokens in DB → use those (OAuth 2.0, multi-model)
- * 2. If .env has TWITTER_ACCESS_TOKEN → use OAuth 1.0a (simple, single model)
+ * Returns both the client and the raw access token (needed for v2 media upload)
  */
-export async function getTwitterClient(modelId: string): Promise<TwitterApi | null> {
+export async function getTwitterClient(modelId: string): Promise<{ client: TwitterApi; rawToken: string } | null> {
     // Check cache first
     const cached = clientCache.get(modelId);
     if (cached && cached.expiresAt > Date.now() + 5 * 60 * 1000) {
-        return cached.client;
+        return { client: cached.client, rawToken: cached.rawToken };
     }
 
     // === Strategy 1: Check DB for model-specific tokens (OAuth 2.0) ===
@@ -38,18 +35,17 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
         .single();
 
     if (model?.twitter_access_token) {
-        // Model has its own tokens in DB
         const expiresAt = model.twitter_token_expires_at
             ? new Date(model.twitter_token_expires_at).getTime()
-            : Date.now() + 365 * 24 * 60 * 60 * 1000; // OAuth 1.0a tokens don't expire
+            : Date.now() + 365 * 24 * 60 * 60 * 1000;
 
         // If OAuth 2.0 token needs refresh
         if (model.twitter_refresh_token && expiresAt < Date.now() + 5 * 60 * 1000) {
             try {
                 const refreshed = await refreshTwitterToken(modelId, model.twitter_refresh_token);
                 if (refreshed) {
-                    clientCache.set(modelId, { client: refreshed.client, expiresAt: refreshed.expiresAt });
-                    return refreshed.client;
+                    clientCache.set(modelId, { client: refreshed.client, rawToken: refreshed.rawToken, expiresAt: refreshed.expiresAt });
+                    return { client: refreshed.client, rawToken: refreshed.rawToken };
                 }
             } catch (err) {
                 console.error('⚠️ Twitter token refresh failed:', err instanceof Error ? err.message : err);
@@ -57,8 +53,8 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
         }
 
         const client = new TwitterApi(model.twitter_access_token);
-        clientCache.set(modelId, { client, expiresAt });
-        return client;
+        clientCache.set(modelId, { client, rawToken: model.twitter_access_token, expiresAt });
+        return { client, rawToken: model.twitter_access_token };
     }
 
     // === Strategy 2: Use .env OAuth 1.0a credentials (single model) ===
@@ -82,8 +78,8 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
         });
 
         const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
-        clientCache.set(modelId, { client, expiresAt });
-        return client;
+        clientCache.set(modelId, { client, rawToken: accessToken, expiresAt });
+        return { client, rawToken: accessToken };
     }
 
     console.log(`⚠️ Model ${modelId.substring(0, 8)} has no Twitter credentials (check DB or .env)`);
@@ -96,7 +92,7 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
 async function refreshTwitterToken(
     modelId: string,
     refreshToken: string
-): Promise<{ client: TwitterApi; expiresAt: number } | null> {
+): Promise<{ client: TwitterApi; rawToken: string; expiresAt: number } | null> {
     const clientId = process.env.TWITTER_CLIENT_ID;
     const clientSecret = process.env.TWITTER_CLIENT_SECRET;
 
@@ -124,7 +120,7 @@ async function refreshTwitterToken(
         .eq('id', modelId);
 
     const client = new TwitterApi(accessToken);
-    return { client, expiresAt };
+    return { client, rawToken: accessToken, expiresAt };
 }
 
 // =============================================
@@ -140,17 +136,19 @@ export async function postTweet(
     text: string,
     photoUrl?: string
 ): Promise<{ success: boolean; url?: string; tweetId?: string; error?: string }> {
-    const client = await getTwitterClient(modelId);
-    if (!client) {
+    const auth = await getTwitterClient(modelId);
+    if (!auth) {
         return { success: false, error: 'No Twitter credentials for this model' };
     }
+
+    const { client, rawToken } = auth;
 
     try {
         let mediaId: string | undefined;
 
         // Upload media if provided
         if (photoUrl) {
-            mediaId = await uploadMedia(client, photoUrl);
+            mediaId = await uploadMedia(rawToken, photoUrl);
             if (!mediaId) {
                 console.log('  ⚠️ Media upload failed, posting text-only tweet instead');
             }
@@ -189,12 +187,13 @@ export async function postReply(
     replyToTweetId: string,
     text: string
 ): Promise<{ success: boolean; tweetId?: string; error?: string }> {
-    const client = await getTwitterClient(modelId);
-    if (!client) {
+    const auth = await getTwitterClient(modelId);
+    if (!auth) {
         return { success: false, error: 'No Twitter credentials' };
     }
 
     try {
+        const { client } = auth;
         const result = await client.v2.tweet({
             text,
             reply: { in_reply_to_tweet_id: replyToTweetId },
@@ -219,11 +218,12 @@ export async function sendDM(
     recipientUserId: string,
     text: string
 ): Promise<{ success: boolean; error?: string }> {
-    const client = await getTwitterClient(modelId);
-    if (!client) {
+    const auth = await getTwitterClient(modelId);
+    if (!auth) {
         return { success: false, error: 'No Twitter credentials' };
     }
 
+    const { client } = auth;
     try {
         await client.v2.sendDmInConversation(
             // Create a new conversation with the recipient
@@ -274,9 +274,10 @@ export async function checkNewDMs(
     modelId: string,
     sinceId?: string
 ): Promise<Array<{ senderId: string; senderName: string; text: string; dmId: string }>> {
-    const client = await getTwitterClient(modelId);
-    if (!client) return [];
+    const auth = await getTwitterClient(modelId);
+    if (!auth) return [];
 
+    const { client } = auth;
     try {
         const dmEvents = await client.v2.listDmEvents({
             max_results: 20,
@@ -319,7 +320,7 @@ const TWITTER_UPLOAD_BASE = 'https://api.twitter.com/2/media/upload';
  * 3-step process: initialize → append → finalize
  * Uses OAuth 2.0 access token (same as tweet posting)
  */
-async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string | undefined> {
+async function uploadMedia(bearerToken: string, photoUrl: string): Promise<string | undefined> {
     try {
         // Download the image first
         const response = await axios.get(photoUrl, {
@@ -337,15 +338,6 @@ async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string
 
         const totalBytes = buffer.length;
         console.log(`  📸 Uploading media v2 (${(totalBytes / 1024).toFixed(0)}KB, ${contentType})...`);
-
-        // Get the bearer token from the client
-        // The client stores the token internally, we need to extract it
-        const bearerToken = (client as any)._accessToken || (client as any).token;
-
-        if (!bearerToken) {
-            console.error('  ⚠️ Could not extract bearer token from client');
-            return undefined;
-        }
 
         const headers = {
             'Authorization': `Bearer ${bearerToken}`,
@@ -472,11 +464,11 @@ export async function lookupUserByHandle(
     modelId: string,
     handle: string
 ): Promise<{ id: string; name: string; followers: number; description: string } | null> {
-    const client = await getTwitterClient(modelId);
-    if (!client) return null;
+    const auth = await getTwitterClient(modelId);
+    if (!auth) return null;
 
     try {
-        const user = await client.v2.userByUsername(handle, {
+        const user = await auth.client.v2.userByUsername(handle, {
             'user.fields': ['public_metrics', 'description'],
         });
 
