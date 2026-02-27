@@ -376,8 +376,10 @@ function generateOAuth1Header(
 /**
  * Upload media (photo) to Twitter using v2 API with OAuth 1.0a
  * 3-step process: initialize → append → finalize
+ * v2 append expects raw binary in `media` field (NOT base64 `media_data`)
  */
 async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
+    let currentStep = 'download';
     try {
         // Check that OAuth 1.0a credentials are available
         if (!process.env.TWITTER_CONSUMER_KEY || !process.env.TWITTER_ACCESS_TOKEN) {
@@ -399,12 +401,18 @@ async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
             contentType = 'image/jpeg';
         }
 
+        // Determine file extension for the filename
+        const ext = contentType === 'image/png' ? 'png'
+            : contentType === 'image/gif' ? 'gif'
+                : 'jpg';
+
         const totalBytes = buffer.length;
         console.log(`  📸 Uploading media v2 (${(totalBytes / 1024).toFixed(0)}KB, ${contentType})...`);
 
         // ---------------------
         // Step 1: INITIALIZE
         // ---------------------
+        currentStep = 'initialize';
         const initUrl = `${TWITTER_UPLOAD_V2}/initialize`;
         const initBody = JSON.stringify({
             total_bytes: totalBytes,
@@ -430,29 +438,31 @@ async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
         console.log(`  📸 Media initialized: ${mediaId}`);
 
         // ---------------------
-        // Step 2: APPEND
+        // Step 2: APPEND (raw binary in `media` field)
         // ---------------------
+        currentStep = 'append';
         const appendUrl = `${TWITTER_UPLOAD_V2}/${mediaId}/append`;
 
-        // Build multipart form data manually for proper OAuth signing
+        // Build multipart form data with raw binary `media` field
         const boundary = `----FormBoundary${crypto.randomBytes(8).toString('hex')}`;
         const bodyParts: Buffer[] = [];
 
-        // Add media_data field (base64 encoded)
+        // Add media field with raw binary data (v2 requires `media`, not `media_data`)
         bodyParts.push(Buffer.from(
             `--${boundary}\r\n` +
-            `Content-Disposition: form-data; name="media_data"\r\n\r\n` +
-            buffer.toString('base64') +
-            `\r\n`
+            `Content-Disposition: form-data; name="media"; filename="media.${ext}"\r\n` +
+            `Content-Type: ${contentType}\r\n\r\n`
         ));
+        bodyParts.push(buffer); // raw binary data
+        bodyParts.push(Buffer.from('\r\n'));
 
         // Close boundary
         bodyParts.push(Buffer.from(`--${boundary}--\r\n`));
 
         const formBody = Buffer.concat(bodyParts);
 
-        // For multipart uploads, OAuth signature should NOT include body params
-        const appendAuth = generateOAuth1Header('POST', appendUrl, { segment_index: '0' });
+        // OAuth signature should NOT include multipart body params
+        const appendAuth = generateOAuth1Header('POST', appendUrl);
 
         await axios.post(appendUrl, formBody, {
             headers: {
@@ -468,6 +478,7 @@ async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
         // ---------------------
         // Step 3: FINALIZE
         // ---------------------
+        currentStep = 'finalize';
         const finalizeUrl = `${TWITTER_UPLOAD_V2}/${mediaId}/finalize`;
         const finalizeAuth = generateOAuth1Header('POST', finalizeUrl);
 
@@ -484,10 +495,14 @@ async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
     } catch (err: any) {
         const errData = err?.response?.data;
         const errStatus = err?.response?.status;
-        const errMsg = errData
-            ? `[${errStatus}] ${JSON.stringify(errData)}`
+        const errUrl = err?.config?.url || 'unknown';
+        const errDetail = errData
+            ? (typeof errData === 'string' ? errData : JSON.stringify(errData))
             : (err instanceof Error ? err.message : String(err));
-        console.error(`⚠️ Media upload failed: ${errMsg}`);
+        console.error(`⚠️ Media upload failed at ${currentStep} step:`);
+        console.error(`   URL: ${errUrl}`);
+        console.error(`   Status: ${errStatus || 'N/A'}`);
+        console.error(`   Detail: ${errDetail}`);
         return undefined;
     }
 }
