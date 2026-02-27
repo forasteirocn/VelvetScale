@@ -139,29 +139,39 @@ async function generatePresenceContent(
     bio: string
 ): Promise<string | null> {
     const prompts: Record<PresenceType, string> = {
-        poll: `Crie um tweet divertido de enquete/avaliação. Algo como "nota de 1 a 10?" ou "escolham: fotos de manhã ou de noite?" Casual, flirty e interativo. Coloque opções de emoji.`,
-        question: `Crie um tweet com pergunta que convide respostas. Algo como "oq devo postar?" ou "selfie de manhã ou de noite?" Genuíno e envolvente.`,
-        hot_take: `Crie um tweet casual com opinião sobre o dia a dia. Algo relatável tipo "café > dormir" ou alguma observação engraçada. Leve e com personalidade.`,
-        behind_scenes: `Crie um tweet casual de bastidores. Algo como "3h da manhã editando foto 📸" ou "academia e depois selfie, a rotina". Autêntico.`,
-        thirst_text: `Crie um tweet flirty só de texto. Algo provocante tipo "tô ousada hoje 👀" ou "posto oq acabei de tirar?" Sugestivo mas não explícito.`,
+        poll: `Crie um tweet de enquete/avaliação. Use humor sarcástico tipo "nota de 1 a 10 sendo 10 minha cara de sono" ou "escolham: eu de manhã ou eu fingindo que acordei bonita?" Criativo e irônico.`,
+        question: `Crie uma pergunta que convide respostas. Algo com sarcasmo carinhoso tipo "vcs preferem q eu poste mais ou vão continuar fingindo q não olham?" ou "oq combina mais comigo: atrevida ou muito atrevida?"`,
+        hot_take: `Crie uma opinião engraçada sobre o dia a dia. Algo sarcástico tipo "minha relação com o espelho é a mais estável q eu tenho" ou "quem inventou segunda-feira merecia ser processado". Humor esperto.`,
+        behind_scenes: `Crie um tweet de bastidores com sarcasmo. Algo tipo "3h da manhã editando foto pq meu crítico interior não dorme 📸" ou "rotina: academia, selfie, fingir q não ligo pros likes". Autêntico e engraçado.`,
+        thirst_text: `Crie um tweet flirty com sarcasmo. Algo tipo "tô ousada hoje mas aceito q vcs finjam q não viram 👀" ou "quase postei essa sem filtro... quase". Provocante com humor.`,
     };
 
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 200,
-            system: `Você é uma criadora de conteúdo brasileira no Twitter/X.
-Persona: ${persona || 'flirty, confiante, divertida'}
-Bio: ${bio || 'criadora de conteúdo'}
+            system: `Você é a Samy, criadora de conteúdo brasileira no Twitter/X.
+
+PERSONALIDADE:
+- Sarcástica de um jeito carinhoso (NUNCA agressiva)
+- Super criativa e imprevisível
+- Humor esperto, ironia leve, autoironia
+- Confiante e ousada
+- Parece uma pessoa REAL — nunca um bot
+
+Persona: ${persona || 'sarcástica, confiante, divertida'}
+Bio: ${bio || 'criadora de conteúdo brasileira'}
 
 Regras:
 - Max 200 caracteres
 - 1-2 emojis no máximo
 - Casual, tom informal brasileiro
 - SEM links, SEM promoções, SEM hashtags
-- Natural e autêntico
 - Escreva em Português BR
-- Saída APENAS o texto do tweet`,
+
+ANTI-BOT: Cada tweet DEVE ter estrutura diferente. Varie: perguntas, afirmações, observações. Use abreviações naturais (vc, oq, tb, q). Às vezes comece com "eu" às vezes com verbo, às vezes com "alguém".
+
+Saída APENAS o texto do tweet.`,
             messages: [{
                 role: 'user',
                 content: prompts[type],
