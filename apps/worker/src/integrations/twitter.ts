@@ -141,14 +141,14 @@ export async function postTweet(
         return { success: false, error: 'No Twitter credentials for this model' };
     }
 
-    const { client, rawToken } = auth;
+    const { client } = auth;
 
     try {
         let mediaId: string | undefined;
 
         // Upload media if provided
         if (photoUrl) {
-            mediaId = await uploadMedia(rawToken, photoUrl);
+            mediaId = await uploadMedia(client, photoUrl);
             if (!mediaId) {
                 console.log('  ⚠️ Media upload failed, posting text-only tweet instead');
             }
@@ -310,17 +310,16 @@ export async function checkNewDMs(
 }
 
 // =============================================
-// Media Upload (v2 API — OAuth 2.0)
+// Media Upload (via twitter-api-v2 library)
+// Uses client.v1.uploadMedia() which handles
+// OAuth 1.0a signing automatically
 // =============================================
 
-const TWITTER_UPLOAD_BASE = 'https://api.twitter.com/2/media/upload';
-
 /**
- * Upload media (photo) to Twitter using v2 API
- * 3-step process: initialize → append → finalize
- * Uses OAuth 2.0 access token (same as tweet posting)
+ * Upload media (photo) to Twitter using the twitter-api-v2 library
+ * The library handles the multi-step upload process and OAuth signing
  */
-async function uploadMedia(bearerToken: string, photoUrl: string): Promise<string | undefined> {
+async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string | undefined> {
     try {
         // Download the image first
         const response = await axios.get(photoUrl, {
@@ -336,68 +335,16 @@ async function uploadMedia(bearerToken: string, photoUrl: string): Promise<strin
             contentType = 'image/jpeg';
         }
 
-        const totalBytes = buffer.length;
-        console.log(`  📸 Uploading media v2 (${(totalBytes / 1024).toFixed(0)}KB, ${contentType})...`);
+        console.log(`  📸 Uploading media (${(buffer.length / 1024).toFixed(0)}KB, ${contentType})...`);
 
-        const headers = {
-            'Authorization': `Bearer ${bearerToken}`,
-        };
-
-        // Step 1: Initialize
-        const initResponse = await axios.post(
-            `${TWITTER_UPLOAD_BASE}/initialize`,
-            {
-                total_bytes: totalBytes,
-                media_type: contentType,
-            },
-            {
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                timeout: 30000,
-            }
-        );
-
-        const mediaId = initResponse.data?.media_id_string || initResponse.data?.id;
-        if (!mediaId) {
-            console.error('  ⚠️ No media_id in initialize response:', JSON.stringify(initResponse.data));
-            return undefined;
-        }
-
-        console.log(`  📸 Media initialized: ${mediaId}`);
-
-        // Step 2: Append (upload the data in one chunk for images < 5MB)
-        const formData = new FormData();
-        formData.append('media_data', buffer.toString('base64'));
-
-        await axios.post(
-            `${TWITTER_UPLOAD_BASE}/${mediaId}/append`,
-            formData,
-            {
-                headers: {
-                    ...headers,
-                    'Content-Type': 'multipart/form-data',
-                },
-                params: { segment_index: 0 },
-                timeout: 60000,
-            }
-        );
-
-        console.log(`  📸 Media data appended`);
-
-        // Step 3: Finalize
-        const finalizeResponse = await axios.post(
-            `${TWITTER_UPLOAD_BASE}/${mediaId}/finalize`,
-            {},
-            {
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                timeout: 30000,
-            }
-        );
+        // Use the library's built-in upload — handles OAuth 1.0a signing automatically
+        const mediaId = await client.v1.uploadMedia(buffer, { mimeType: contentType });
 
         console.log(`  📸 Media uploaded successfully: ${mediaId}`);
         return mediaId;
     } catch (err: any) {
-        const errMsg = err?.response?.data
-            ? JSON.stringify(err.response.data)
+        const errMsg = err?.data
+            ? JSON.stringify(err.data)
             : (err instanceof Error ? err.message : String(err));
         console.error(`⚠️ Media upload failed: ${errMsg}`);
         return undefined;
