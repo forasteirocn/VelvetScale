@@ -313,10 +313,32 @@ export async function checkNewDMs(
 // =============================================
 
 /**
- * Upload media (photo) to Twitter
- * Uses v1.1 media upload API, returns media_id for v2 tweet
+ * Get an OAuth 1.0a client specifically for media upload
+ * v1.1 media upload ONLY works with OAuth 1.0a, not OAuth 2.0
  */
-async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string | undefined> {
+function getMediaUploadClient(): TwitterApi | null {
+    const appKey = process.env.TWITTER_CONSUMER_KEY;
+    const appSecret = process.env.TWITTER_CONSUMER_SECRET;
+    const accessToken = process.env.TWITTER_ACCESS_TOKEN;
+    const accessSecret = process.env.TWITTER_ACCESS_SECRET;
+
+    if (!appKey || !appSecret || !accessToken || !accessSecret) {
+        console.log('  ⚠️ OAuth 1.0a credentials not in .env — media upload unavailable');
+        return null;
+    }
+
+    return new TwitterApi({ appKey, appSecret, accessToken, accessSecret });
+}
+
+/**
+ * Upload media (photo) to Twitter
+ * Uses v1.1 media upload API with OAuth 1.0a, returns media_id for v2 tweet
+ */
+async function uploadMedia(_oauth2Client: TwitterApi, photoUrl: string): Promise<string | undefined> {
+    // Media upload requires OAuth 1.0a (v1.1 API)
+    const mediaClient = getMediaUploadClient();
+    if (!mediaClient) return undefined;
+
     try {
         // Download the image first
         const response = await axios.get(photoUrl, {
@@ -327,8 +349,10 @@ async function uploadMedia(client: TwitterApi, photoUrl: string): Promise<string
         const buffer = Buffer.from(response.data);
         const contentType = response.headers['content-type'] || 'image/jpeg';
 
-        // Upload to Twitter via v1.1 API
-        const mediaId = await client.v1.uploadMedia(buffer, {
+        console.log(`  📸 Uploading media (${(buffer.length / 1024).toFixed(0)}KB, ${contentType})...`);
+
+        // Upload to Twitter via v1.1 API with OAuth 1.0a
+        const mediaId = await mediaClient.v1.uploadMedia(buffer, {
             mimeType: contentType,
         });
 
