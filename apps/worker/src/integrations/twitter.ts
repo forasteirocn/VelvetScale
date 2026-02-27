@@ -1,7 +1,6 @@
 import { TwitterApi, type TweetV2PostTweetResult } from 'twitter-api-v2';
 import { getSupabaseAdmin } from '@velvetscale/db';
 import axios from 'axios';
-import crypto from 'crypto';
 
 // =============================================
 // VelvetScale Twitter/X Integration
@@ -149,7 +148,7 @@ export async function postTweet(
 
         // Upload media if provided
         if (photoUrl) {
-            mediaId = await uploadMediaV2(photoUrl);
+            mediaId = await uploadMediaWithClient(client, photoUrl);
             if (!mediaId) {
                 console.log('  ⚠️ Media upload failed, posting text-only tweet instead');
             }
@@ -311,83 +310,18 @@ export async function checkNewDMs(
 }
 
 // =============================================
-// Media Upload (v2 API with OAuth 1.0a signing)
-// v1.1 media upload was deprecated March 2025
-// Uses /2/media/upload/initialize, /{id}/append, /{id}/finalize
+// Media Upload (uses twitter-api-v2 library)
+// The library handles OAuth signing + init/append/finalize internally
 // =============================================
 
-const TWITTER_UPLOAD_V2 = 'https://api.twitter.com/2/media/upload';
-
 /**
- * Generate OAuth 1.0a Authorization header
- * Implements HMAC-SHA1 signing as required by Twitter API
+ * Upload media (photo) to Twitter using the twitter-api-v2 library
+ * Uses client.v2.uploadMedia() which handles the full v2 upload flow
  */
-function generateOAuth1Header(
-    method: string,
-    url: string,
-    params: Record<string, string> = {}
-): string {
-    const consumerKey = process.env.TWITTER_CONSUMER_KEY!;
-    const consumerSecret = process.env.TWITTER_CONSUMER_SECRET!;
-    const accessToken = process.env.TWITTER_ACCESS_TOKEN!;
-    const accessSecret = process.env.TWITTER_ACCESS_SECRET!;
-
-    const oauthParams: Record<string, string> = {
-        oauth_consumer_key: consumerKey,
-        oauth_nonce: crypto.randomBytes(16).toString('hex'),
-        oauth_signature_method: 'HMAC-SHA1',
-        oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
-        oauth_token: accessToken,
-        oauth_version: '1.0',
-    };
-
-    // Combine oauth params and request params for signature base
-    const allParams = { ...oauthParams, ...params };
-    const sortedKeys = Object.keys(allParams).sort();
-    const paramString = sortedKeys
-        .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(allParams[k])}`)
-        .join('&');
-
-    // Create signature base string
-    const signatureBase = [
-        method.toUpperCase(),
-        encodeURIComponent(url),
-        encodeURIComponent(paramString),
-    ].join('&');
-
-    // Sign with HMAC-SHA1
-    const signingKey = `${encodeURIComponent(consumerSecret)}&${encodeURIComponent(accessSecret)}`;
-    const signature = crypto
-        .createHmac('sha1', signingKey)
-        .update(signatureBase)
-        .digest('base64');
-
-    oauthParams['oauth_signature'] = signature;
-
-    // Build Authorization header
-    const headerParts = Object.keys(oauthParams)
-        .sort()
-        .map(k => `${encodeURIComponent(k)}="${encodeURIComponent(oauthParams[k])}"`)
-        .join(', ');
-
-    return `OAuth ${headerParts}`;
-}
-
-/**
- * Upload media (photo) to Twitter using v2 API with OAuth 1.0a
- * 3-step process: initialize → append → finalize
- * v2 append expects raw binary in `media` field (NOT base64 `media_data`)
- */
-async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
-    let currentStep = 'download';
+async function uploadMediaWithClient(client: TwitterApi, photoUrl: string): Promise<string | undefined> {
     try {
-        // Check that OAuth 1.0a credentials are available
-        if (!process.env.TWITTER_CONSUMER_KEY || !process.env.TWITTER_ACCESS_TOKEN) {
-            console.error('  ⚠️ OAuth 1.0a credentials not set for media upload');
-            return undefined;
-        }
-
-        // Download the image first
+        // Download the image
+        console.log(`  📸 Downloading image from ${photoUrl.substring(0, 60)}...`);
         const response = await axios.get(photoUrl, {
             responseType: 'arraybuffer',
             timeout: 30000,
@@ -401,111 +335,29 @@ async function uploadMediaV2(photoUrl: string): Promise<string | undefined> {
             contentType = 'image/jpeg';
         }
 
-        // Determine file extension for the filename
-        const ext = contentType === 'image/png' ? 'png'
-            : contentType === 'image/gif' ? 'gif'
-                : 'jpg';
+        console.log(`  📸 Uploading media v2 (${(buffer.length / 1024).toFixed(0)}KB, ${contentType})...`);
 
-        const totalBytes = buffer.length;
-        console.log(`  📸 Uploading media v2 (${(totalBytes / 1024).toFixed(0)}KB, ${contentType})...`);
-
-        // ---------------------
-        // Step 1: INITIALIZE
-        // ---------------------
-        currentStep = 'initialize';
-        const initUrl = `${TWITTER_UPLOAD_V2}/initialize`;
-        const initBody = JSON.stringify({
-            total_bytes: totalBytes,
-            media_type: contentType,
+        // Use the library's built-in v2 upload — handles OAuth signing + init/append/finalize
+        const mediaId = await client.v2.uploadMedia(buffer, {
+            media_type: contentType as any,
             media_category: 'tweet_image',
-        });
-
-        const initAuth = generateOAuth1Header('POST', initUrl);
-        const initResponse = await axios.post(initUrl, initBody, {
-            headers: {
-                'Authorization': initAuth,
-                'Content-Type': 'application/json',
-            },
-            timeout: 30000,
-        });
-
-        const mediaId = initResponse.data?.id || initResponse.data?.media_id_string;
-        if (!mediaId) {
-            console.error('  ⚠️ No media_id in initialize response:', JSON.stringify(initResponse.data));
-            return undefined;
-        }
-
-        console.log(`  📸 Media initialized: ${mediaId}`);
-
-        // ---------------------
-        // Step 2: APPEND (raw binary in `media` field)
-        // ---------------------
-        currentStep = 'append';
-        const appendUrl = `${TWITTER_UPLOAD_V2}/${mediaId}/append`;
-
-        // Build multipart form data with raw binary `media` field
-        const boundary = `----FormBoundary${crypto.randomBytes(8).toString('hex')}`;
-        const bodyParts: Buffer[] = [];
-
-        // Add media field with raw binary data (v2 requires `media`, not `media_data`)
-        bodyParts.push(Buffer.from(
-            `--${boundary}\r\n` +
-            `Content-Disposition: form-data; name="media"; filename="media.${ext}"\r\n` +
-            `Content-Type: ${contentType}\r\n\r\n`
-        ));
-        bodyParts.push(buffer); // raw binary data
-        bodyParts.push(Buffer.from('\r\n'));
-
-        // Close boundary
-        bodyParts.push(Buffer.from(`--${boundary}--\r\n`));
-
-        const formBody = Buffer.concat(bodyParts);
-
-        // OAuth signature should NOT include multipart body params
-        const appendAuth = generateOAuth1Header('POST', appendUrl);
-
-        await axios.post(appendUrl, formBody, {
-            headers: {
-                'Authorization': appendAuth,
-                'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            },
-            params: { segment_index: 0 },
-            timeout: 60000,
-        });
-
-        console.log(`  📸 Media data appended`);
-
-        // ---------------------
-        // Step 3: FINALIZE
-        // ---------------------
-        currentStep = 'finalize';
-        const finalizeUrl = `${TWITTER_UPLOAD_V2}/${mediaId}/finalize`;
-        const finalizeAuth = generateOAuth1Header('POST', finalizeUrl);
-
-        await axios.post(finalizeUrl, '{}', {
-            headers: {
-                'Authorization': finalizeAuth,
-                'Content-Type': 'application/json',
-            },
-            timeout: 30000,
         });
 
         console.log(`  📸 Media uploaded successfully: ${mediaId}`);
         return mediaId;
     } catch (err: any) {
-        const errData = err?.response?.data;
-        const errStatus = err?.response?.status;
-        const errUrl = err?.config?.url || 'unknown';
+        const errData = err?.data || err?.response?.data;
+        const errCode = err?.code || err?.response?.status;
         const errDetail = errData
             ? (typeof errData === 'string' ? errData : JSON.stringify(errData))
             : (err instanceof Error ? err.message : String(err));
-        console.error(`⚠️ Media upload failed at ${currentStep} step:`);
-        console.error(`   URL: ${errUrl}`);
-        console.error(`   Status: ${errStatus || 'N/A'}`);
+        console.error(`⚠️ Media upload failed:`);
+        console.error(`   Code: ${errCode || 'N/A'}`);
         console.error(`   Detail: ${errDetail}`);
         return undefined;
     }
 }
+
 
 // =============================================
 // Write Budget Tracking
