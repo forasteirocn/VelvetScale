@@ -12,6 +12,8 @@ import { startKarmaBuilder, stopKarmaBuilder } from './karma';
 import { startSubDiscovery, stopSubDiscovery } from './discovery-smart';
 import { startAntiBanMonitor, stopAntiBanMonitor } from './anti-ban';
 import { startLearningEngine, stopLearningEngine } from './learning';
+import { startTwitterEngine, stopTwitterEngine } from './twitter-strategy';
+import { startCollabHunter, stopCollabHunter } from './twitter-collab';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -46,6 +48,8 @@ async function main() {
         startSubDiscovery();       // Descobre subs (24h)
         startAntiBanMonitor();     // Detecta posts removidos (1h)
         startLearningEngine();     // Aprende com resultados (24h)
+        startTwitterEngine();      // Twitter content engine (4h)
+        startCollabHunter();       // Twitter collab hunter (24h)
 
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);
@@ -68,6 +72,8 @@ process.on('SIGINT', async () => {
     stopSubDiscovery();
     stopAntiBanMonitor();
     stopLearningEngine();
+    stopTwitterEngine();
+    stopCollabHunter();
     await closeBrowser();
     process.exit(0);
 });
@@ -80,6 +86,8 @@ process.on('SIGTERM', async () => {
     stopSubDiscovery();
     stopAntiBanMonitor();
     stopLearningEngine();
+    stopTwitterEngine();
+    stopCollabHunter();
     await closeBrowser();
     process.exit(0);
 });

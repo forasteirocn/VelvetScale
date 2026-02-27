@@ -150,6 +150,12 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 `/ajuda\n` +
                 `→ Mostra essa mensagem de novo\n\n` +
 
+                `*TWITTER/X:*\n\n` +
+
+                `📷 Foto + /twitter na legenda\n` +
+                `→ Posta foto no Twitter/X\n` +
+                `Ex: envie foto com legenda "/twitter feeling cute"\n\n` +
+
                 `_ID: ${chatId}_`
             );
             return;
@@ -264,6 +270,54 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             return;
         }
 
+        // === Handle /aprovar_collab_ command ===
+        if (update.message?.text?.startsWith('/aprovar_collab_')) {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            const collabIdPrefix = update.message.text.replace('/aprovar_collab_', '').trim();
+
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (model) {
+                const { approveCollabReply } = await import('../twitter-collab');
+                const result = await approveCollabReply(model.id, collabIdPrefix);
+                await sendTelegramMessage(chatId, result);
+            }
+            return;
+        }
+
+        // === Handle /collab_reply_ command ===
+        if (update.message?.text?.startsWith('/collab_reply_')) {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            const text = update.message.text.replace(/^\/collab_reply_\w+\s*/, '').trim();
+            const collabIdPrefix = update.message.text.match(/\/collab_reply_(\w+)/)?.[1] || '';
+
+            if (!text) {
+                await sendTelegramMessage(chatId, '⚠️ Formato: /collab\\_reply\\_ID sua resposta');
+                return;
+            }
+
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (model) {
+                const { customCollabReply } = await import('../twitter-collab');
+                const result = await customCollabReply(model.id, collabIdPrefix, text);
+                await sendTelegramMessage(chatId, result);
+            }
+            return;
+        }
+
         // === Handle text commands ===
         if (update.message?.text) {
             await handleTextMessage(update);
@@ -346,16 +400,19 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const telegramId = msg.from.id.toString();
     const isImmediate = rawCaption.toLowerCase().startsWith('/postar');
     const isPiloto = rawCaption.toLowerCase().startsWith('/piloto');
+    const isTwitter = rawCaption.toLowerCase().startsWith('/twitter');
     const caption = isImmediate
         ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥'
         : isPiloto
             ? rawCaption.replace(/^\/piloto\s*/i, '').trim() || '🔥'
-            : rawCaption || '🔥';
+            : isTwitter
+                ? rawCaption.replace(/^\/twitter\s*/i, '').trim() || '🔥'
+                : rawCaption || '🔥';
 
     // Get highest resolution photo
     const bestPhoto = msg.photo![msg.photo!.length - 1];
 
-    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : isPiloto ? 'PILOTO' : 'agendado'})`);
+    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : isPiloto ? 'PILOTO' : isTwitter ? 'TWITTER' : 'agendado'})`);
 
     await sendTypingAction(chatId);
 
@@ -390,6 +447,10 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     if (isPiloto || isInBatchMode(model.id)) {
         // === AUTONOMOUS CALENDAR MODE ===
         await addPhotoToBatch(model.id, chatId, photoUrl, caption, bestPhoto.file_id);
+    } else if (isTwitter) {
+        // === TWITTER POST ===
+        const { manualTwitterPost } = await import('../twitter-strategy');
+        await manualTwitterPost(model.id, chatId, caption, photoUrl);
     } else if (isImmediate) {
         // === INTELLIGENT IMMEDIATE POST ===
         const { intelligentImmediatePost } = await import('../strategy');
