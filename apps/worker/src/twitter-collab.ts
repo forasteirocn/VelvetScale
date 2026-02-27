@@ -105,50 +105,66 @@ async function suggestCollabPartners(model: {
     const newCandidates = candidates.filter(c => !alreadySuggested.has(c.handle.toLowerCase()));
     if (!newCandidates.length) return;
 
-    // Look up real profiles for top 3
-    const profiles: Array<{ handle: string; reason: string; followers: number; bio: string }> = [];
+    // Look up real profiles for top 3 and generate suggested DMs
+    const profiles: Array<{ handle: string; reason: string; followers: number; bio: string; suggestedDM: string }> = [];
 
     for (const candidate of newCandidates.slice(0, 3)) {
         const user = await lookupUserByHandle(model.id, candidate.handle);
         if (!user) continue;
+
+        // Generate suggested DM in the target's language
+        const suggestedDM = await generateCollabDM(
+            model.persona || '',
+            candidate.handle,
+            user.description,
+            user.followers
+        ) || 'Hey! Love your content 💕 Wanna do a S4S?';
 
         profiles.push({
             handle: candidate.handle,
             reason: candidate.reason,
             followers: user.followers,
             bio: user.description.substring(0, 80),
+            suggestedDM,
         });
 
-        // Save as suggested
+        // Save as suggested (with DM text for reference)
         await supabase.from('twitter_collabs').insert({
             model_id: model.id,
             target_handle: candidate.handle,
             target_user_id: user.id,
             followers_count: user.followers,
             status: 'suggested',
-            dm_text: null,
+            dm_text: suggestedDM,
         });
     }
 
-    // Send suggestions via Telegram
+    // Send suggestions via Telegram (one message per profile for easy copy-paste)
     if (profiles.length > 0 && model.phone) {
-        let msg = `🤝 *Collab Hunter — Sugestões de S4S:*\n\n`;
-        msg += `Encontrei ${profiles.length} perfis bons pra collab:\n\n`;
+        // Summary message
+        await sendTelegramMessage(model.phone,
+            `🤝 *Collab Hunter — ${profiles.length} sugestões de S4S!*\n\n` +
+            `Encontrei perfis bons pro seu nicho. Vou mandar cada um com uma DM pronta pra vc copiar e colar! 👇`
+        );
 
+        // One message per profile with suggested DM
         for (const p of profiles) {
-            msg += `🔹 *@${p.handle}* (${(p.followers / 1000).toFixed(1)}K seguidores)\n`;
-            msg += `   ${p.reason}\n`;
-            msg += `   Bio: "${p.bio}"\n\n`;
+            await sendTelegramMessage(model.phone,
+                `🔹 *@${p.handle}* — ${(p.followers / 1000).toFixed(1)}K seguidores\n` +
+                `${p.reason}\n` +
+                `Bio: "${p.bio}"\n\n` +
+                `📩 *DM sugerida (copie e cole):*\n\n` +
+                `\`${p.suggestedDM}\`\n\n` +
+                `_Abra o Twitter → perfil da @${p.handle} → DM → cole a mensagem acima!_`
+            );
+
+            // Small delay between messages
+            await new Promise(r => setTimeout(r, 1000));
         }
-
-        msg += `_Mande a DM você mesma pelo app do Twitter!_\n`;
-        msg += `_Se responderem, eu aviso e ajudo com a conversa 💬_`;
-
-        await sendTelegramMessage(model.phone, msg);
     }
 
     if (profiles.length > 0) {
-        console.log(`  🤝 Suggested ${profiles.length} collab partners via Telegram`);
+        console.log(`  🤝 Suggested ${profiles.length} collab partners with DMs via Telegram`);
     }
 }
 
@@ -381,7 +397,7 @@ export async function customCollabReply(
 // =============================================
 
 /**
- * Generate a personalized collab DM
+ * Generate a personalized collab DM in the target's language
  */
 async function generateCollabDM(
     persona: string,
@@ -393,29 +409,42 @@ async function generateCollabDM(
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 300,
-            system: `You write friendly DMs to other content creators proposing S4S (shoutout for shoutout) partnerships.
+            system: `Você é a Samy, criadora de conteúdo brasileira, escrevendo uma DM para propor S4S (shoutout for shoutout).
 
-RULES:
-- Be warm, genuine, and personal
-- Reference something specific about their profile/bio
-- Keep it 2-3 sentences MAX
-- Suggest S4S clearly but casually
-- NO cringe, NO overly formal language
-- Sound like a real person, not a bot
-- Persona: ${persona || 'friendly and confident'}
+PERSONALIDADE:
+- Simpática, divertida e direta
+- Sarcástica de leve (mas educada — é primeira conversa)
+- Confiante sem ser arrogante
+- Parece uma pessoa REAL
 
-GOOD DM examples:
-- "Hey! Love your content, especially the fitness stuff. Would you be down for a S4S sometime? I think our audiences would vibe 💕"
-- "Hii! I've been following you for a bit and really love your aesthetic. Wanna do a shoutout exchange? 🤍"
+IDIOMA:
+- Analise a bio do target pra detectar o idioma
+- Se a bio estiver em inglês → escreva a DM em inglês
+- Se a bio estiver em português → escreva em português
+- Se a bio estiver em espanhol → escreva em espanhol
+- Se a bio estiver em japonês → escreva em inglês (mais seguro)
+- Adapte gírias e expressões pro idioma
 
-BAD DM examples (never do this):
-- "Dear creator, I am reaching out to propose a mutually beneficial partnership..."
-- "Hi! I have 50k followers and would like to promote each other!"
+REGRAS:
+- 2-3 frases MAX (mensagem curta = mais chance de resposta)
+- Mencione algo ESPECÍFICO da bio ou do conteúdo dela
+- Proponha S4S de forma casual e natural
+- Use 1 emoji no máximo
+- SEM formalidade, SEM cringe
+- A DM deve fazer a pessoa QUERER responder
 
-Respond with ONLY the DM text.`,
+BONS exemplos:
+- "Hey! Your booty content is 🔥 would you be down for a S4S? I think our fans would love it"
+- "Oii! Amei seu perfil, a gente tem vibes parecidas. Bora fazer um S4S? 💕"
+
+PÉSSIMOS exemplos (NUNCA faça):
+- "Dear creator, I am reaching out to propose a partnership..."
+- "Oi! Tenho X seguidores e quero propor uma parceria!"
+
+Responda com APENAS o texto da DM.`,
             messages: [{
                 role: 'user',
-                content: `Target: @${targetHandle}\nBio: "${targetBio}"\nFollowers: ${targetFollowers}\n\nWrite a S4S DM:`,
+                content: `Target: @${targetHandle}\nBio: "${targetBio}"\nFollowers: ${targetFollowers}\n\nEscreva a DM de S4S:`,
             }],
         });
 
