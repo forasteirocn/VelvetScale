@@ -21,19 +21,50 @@ let dmCheckInterval: ReturnType<typeof setInterval> | null = null;
 export function startCollabHunter(): void {
     if (collabInterval) return;
 
-    console.log('🤝 Collab Hunter iniciado (prospecta 1x/dia, checa DMs 2h)');
+    console.log('🤝 Collab Hunter iniciado (diário 18:50 BRT, checa DMs 2h)');
 
-    // Prospect daily (first run after 30min)
-    setTimeout(() => {
-        prospectCollabs();
-        collabInterval = setInterval(prospectCollabs, 24 * 60 * 60 * 1000); // Daily
-    }, 30 * 60 * 1000);
+    // Schedule prospecting daily at 18:50 BRT
+    scheduleAt1850BRT();
 
     // Check DM responses every 2h (first run after 15min)
     setTimeout(() => {
         checkDMResponses();
         dmCheckInterval = setInterval(checkDMResponses, 2 * 60 * 60 * 1000); // 2h
     }, 15 * 60 * 1000);
+}
+
+/**
+ * Schedule prospectCollabs to run daily at 18:50 BRT (UTC-3)
+ */
+function scheduleAt1850BRT(): void {
+    const now = new Date();
+
+    // BRT = UTC-3
+    const brtOffset = -3 * 60; // minutes
+    const localOffset = now.getTimezoneOffset(); // minutes from UTC
+    const brtNow = new Date(now.getTime() + (localOffset + brtOffset) * 60 * 1000);
+
+    // Target: 18:50 BRT today
+    const target = new Date(brtNow);
+    target.setHours(18, 50, 0, 0);
+
+    // If 18:50 already passed today, schedule for tomorrow
+    if (brtNow >= target) {
+        target.setDate(target.getDate() + 1);
+    }
+
+    // Convert back to local time for setTimeout
+    const msUntilTarget = target.getTime() - brtNow.getTime();
+
+    const hours = Math.floor(msUntilTarget / (60 * 60 * 1000));
+    const mins = Math.floor((msUntilTarget % (60 * 60 * 1000)) / (60 * 1000));
+    console.log(`  ⏰ Próxima busca de collabs em ${hours}h${mins}min (18:50 BRT)`);
+
+    collabInterval = setTimeout(async () => {
+        await prospectCollabs();
+        // Reschedule for tomorrow
+        scheduleAt1850BRT();
+    }, msUntilTarget) as any;
 }
 
 export function stopCollabHunter(): void {
@@ -108,7 +139,7 @@ async function suggestCollabPartners(model: {
     // Look up real profiles for top 3 and generate suggested DMs
     const profiles: Array<{ handle: string; reason: string; followers: number; bio: string; suggestedDM: string }> = [];
 
-    for (const candidate of newCandidates.slice(0, 3)) {
+    for (const candidate of newCandidates.slice(0, 15)) {
         const user = await lookupUserByHandle(model.id, candidate.handle);
         if (!user) continue;
 
@@ -179,9 +210,9 @@ async function findCandidates(model: {
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
-            max_tokens: 500,
+            max_tokens: 1500,
             system: `You help find Twitter/X creators for potential S4S (shoutout for shoutout) partnerships.
-Given a model's bio, suggest 5-10 Twitter handles of real creators in similar niches who might be open to S4S.
+Given a model's bio, suggest 20 Twitter handles of real creators in similar niches who might be open to S4S.
 
 TARGET NICHES (high conversion for this model):
 - Bumbum / booty content creators
