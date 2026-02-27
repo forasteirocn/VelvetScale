@@ -130,6 +130,24 @@ async function postForModel(model: {
         });
 
         console.log(`  ✨ Presence post (${contentType}): "${tweet.substring(0, 50)}..."`);
+
+        // Notify via Telegram
+        if (model.phone) {
+            const typeLabels: Record<string, string> = {
+                poll: '📊 Enquete',
+                question: '❓ Pergunta',
+                hot_take: '🔥 Opinião',
+                behind_scenes: '🎬 Bastidores',
+                thirst_text: '😏 Texto flirty',
+            };
+            await sendTelegramMessage(
+                Number(model.phone),
+                `✨ *Tweet de presença publicado!*\n\n` +
+                `Tipo: ${typeLabels[contentType] || contentType}\n\n` +
+                `"${tweet}"\n\n` +
+                `🔗 ${result.url}`
+            );
+        }
     }
 }
 

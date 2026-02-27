@@ -141,6 +141,16 @@ async function replyToMentions(model: {
                 repliedCount++;
 
                 console.log(`  💬 Replied to mention: "${reply.substring(0, 40)}..."`);
+
+                // Notify via Telegram
+                if (model.phone) {
+                    await sendTelegramMessage(
+                        Number(model.phone),
+                        `💬 *Respondi uma menção no Twitter!*\n\n` +
+                        `Menção: "${mention.text.substring(0, 100)}"\n\n` +
+                        `Minha resposta: "${reply}"`
+                    );
+                }
             } catch (err) {
                 console.error(`  ❌ Reply failed:`, err instanceof Error ? err.message : err);
             }

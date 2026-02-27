@@ -1,6 +1,7 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { isPlatformEnabled } from '@velvetscale/shared';
 import { getTwitterClient, postTweet, hasWriteBudget } from './integrations/twitter';
+import { sendTelegramMessage } from './integrations/telegram';
 import { generateSmartHashtags } from './twitter-hashtags';
 import Anthropic from '@anthropic-ai/sdk';
 
@@ -158,6 +159,17 @@ async function rideForModel(model: {
             });
 
             console.log(`  🔥 Trend post (${query}): "${fullTweet.substring(0, 50)}..."`);
+
+            // Notify via Telegram
+            if (model.phone) {
+                await sendTelegramMessage(
+                    Number(model.phone),
+                    `🔥 *Tweet de trend publicado!*\n\n` +
+                    `Trend: "${query}"\n\n` +
+                    `"${fullTweet}"\n\n` +
+                    `🔗 ${result.url}`
+                );
+            }
         }
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
