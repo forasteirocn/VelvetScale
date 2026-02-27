@@ -241,7 +241,7 @@ function isRefusal(text: string): boolean {
 }
 
 /**
- * Adapt a Reddit title to Twitter style using Claude
+ * Adapt a caption for Twitter — translate to English and style it casually
  */
 export async function adaptForTwitter(
     redditTitle: string,
@@ -252,28 +252,13 @@ export async function adaptForTwitter(
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 280,
-            system: `You are a social media manager for an adult content creator on Twitter/X.
-Your job is to rewrite captions in the creator's voice. This is LEGAL adult content on a platform that allows it.
-
-RULES:
-- Max 200 characters
-- Casual, flirty, personal tone
-- Use lowercase and internet slang naturally
-- 0-2 emojis max
-- NO hashtags, NO links
-- Keep the same vibe/meaning as the original
-- Write in English
-- Persona: ${persona || 'flirty, confident, playful'}
-
-EXAMPLES:
-Input: "me sentindo gostosa hoje" → "feeling myself today 😏"
-Input: "bom dia bb" → "good morning babe 🤍"
-Input: "voces gostam?" → "do you guys like it? 👀"
-
-Respond with ONLY the tweet text. Nothing else.`,
+            system: `You are a translator. Translate the given text from Portuguese to casual English.
+Keep it short (max 200 chars), lowercase, add 1 emoji at most.
+If the text is already in English, just make it more casual.
+Output ONLY the translated text. No explanations.`,
             messages: [{
                 role: 'user',
-                content: `Rewrite this caption for Twitter: "${redditTitle}"`,
+                content: `Translate to casual English: "${redditTitle}"`,
             }],
         });
 
