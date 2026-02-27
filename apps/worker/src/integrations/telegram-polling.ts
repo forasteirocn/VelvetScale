@@ -155,9 +155,23 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
 
                 `*TWITTER/X:*\n\n` +
 
-                `📷 Foto + /twitter na legenda\n` +
+                `/twitter na legenda\n` +
                 `→ Posta foto no Twitter/X\n` +
                 `Ex: envie foto com legenda "/twitter feeling cute"\n\n` +
+
+                `📷 Foto + /postar\\_tudo na legenda\n` +
+                `→ Posta no Reddit E Twitter ao mesmo tempo\n\n` +
+
+                `*PLATAFORMAS:*\n\n` +
+
+                `/plataformas\n` +
+                `→ Mostra quais plataformas estao ativadas\n\n` +
+
+                `/ativar\\_twitter ou /desativar\\_twitter\n` +
+                `→ Liga/desliga Twitter\n\n` +
+
+                `/ativar\\_reddit ou /desativar\\_reddit\n` +
+                `→ Liga/desliga Reddit\n\n` +
 
                 `_ID: ${chatId}_`
             );
@@ -315,6 +329,69 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             return;
         }
 
+        // === Handle /plataformas command ===
+        if (update.message?.text === '/plataformas') {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id, enabled_platforms')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (!model) {
+                await sendTelegramMessage(chatId, '⚠️ Conta não encontrada.');
+                return;
+            }
+
+            const platforms = model.enabled_platforms || { reddit: true, twitter: false };
+            const reddit = platforms.reddit ? '✅' : '❌';
+            const twitter = platforms.twitter ? '✅' : '❌';
+            await sendTelegramMessage(chatId,
+                `📡 *Plataformas*\n\n` +
+                `${reddit} Reddit\n` +
+                `${twitter} Twitter/X\n\n` +
+                `Use /ativar\\_twitter ou /desativar\\_reddit etc.`
+            );
+            return;
+        }
+
+        // === Handle /ativar_* and /desativar_* commands ===
+        if (update.message?.text?.match(/^\/(ativar|desativar)_(reddit|twitter)$/)) {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            const match = update.message.text.match(/^\/(ativar|desativar)_(reddit|twitter)$/)!;
+            const action = match[1]; // 'ativar' or 'desativar'
+            const platform = match[2]; // 'reddit' or 'twitter'
+            const enable = action === 'ativar';
+
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id, enabled_platforms')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (!model) {
+                await sendTelegramMessage(chatId, '⚠️ Conta não encontrada.');
+                return;
+            }
+
+            const current = model.enabled_platforms || { reddit: true, twitter: false };
+            const updated = { ...current, [platform]: enable };
+
+            await supabase
+                .from('models')
+                .update({ enabled_platforms: updated })
+                .eq('id', model.id);
+
+            const emoji = enable ? '✅' : '❌';
+            const label = platform === 'twitter' ? 'Twitter/X' : 'Reddit';
+            await sendTelegramMessage(chatId, `${emoji} ${label} ${enable ? 'ativado' : 'desativado'}!`);
+            return;
+        }
+
         // === Handle /aprovar_collab_ command ===
         if (update.message?.text?.startsWith('/aprovar_collab_')) {
             const chatId = update.message.chat.id;
@@ -443,21 +520,24 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     const chatId = msg.chat.id;
     const rawCaption = msg.caption || '';
     const telegramId = msg.from.id.toString();
-    const isImmediate = rawCaption.toLowerCase().startsWith('/postar');
+    const isPostarTudo = rawCaption.toLowerCase().startsWith('/postar_tudo');
+    const isImmediate = !isPostarTudo && rawCaption.toLowerCase().startsWith('/postar');
     const isPiloto = rawCaption.toLowerCase().startsWith('/piloto');
     const isTwitter = rawCaption.toLowerCase().startsWith('/twitter');
-    const caption = isImmediate
-        ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥'
-        : isPiloto
-            ? rawCaption.replace(/^\/piloto\s*/i, '').trim() || '🔥'
-            : isTwitter
-                ? rawCaption.replace(/^\/twitter\s*/i, '').trim() || '🔥'
-                : rawCaption || '🔥';
+    const caption = isPostarTudo
+        ? rawCaption.replace(/^\/postar_tudo\s*/i, '').trim() || '🔥'
+        : isImmediate
+            ? rawCaption.replace(/^\/postar\s*/i, '').trim() || '🔥'
+            : isPiloto
+                ? rawCaption.replace(/^\/piloto\s*/i, '').trim() || '🔥'
+                : isTwitter
+                    ? rawCaption.replace(/^\/twitter\s*/i, '').trim() || '🔥'
+                    : rawCaption || '🔥';
 
     // Get highest resolution photo
     const bestPhoto = msg.photo![msg.photo!.length - 1];
 
-    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isImmediate ? 'IMEDIATO' : isPiloto ? 'PILOTO' : isTwitter ? 'TWITTER' : 'agendado'})`);
+    console.log(`📸 Foto de ${msg.from.username || telegramId}: "${caption}" (${isPostarTudo ? 'REDDIT+TWITTER' : isImmediate ? 'IMEDIATO' : isPiloto ? 'PILOTO' : isTwitter ? 'TWITTER' : 'agendado'})`);
 
     await sendTypingAction(chatId);
 
@@ -492,6 +572,15 @@ async function handlePhotoMessage(update: TelegramUpdate): Promise<void> {
     if (isPiloto || isInBatchMode(model.id)) {
         // === AUTONOMOUS CALENDAR MODE ===
         await addPhotoToBatch(model.id, chatId, photoUrl, caption, bestPhoto.file_id);
+    } else if (isPostarTudo) {
+        // === POST TO BOTH REDDIT + TWITTER ===
+        await sendTelegramMessage(chatId, '🚀 Postando no Reddit E Twitter...');
+        const { intelligentImmediatePost } = await import('../strategy');
+        const { manualTwitterPost } = await import('../twitter-strategy');
+        await Promise.all([
+            intelligentImmediatePost(model.id, photoUrl, caption, chatId),
+            manualTwitterPost(model.id, chatId, caption, photoUrl),
+        ]);
     } else if (isTwitter) {
         // === TWITTER POST ===
         const { manualTwitterPost } = await import('../twitter-strategy');

@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
+import { isPlatformEnabled } from '@velvetscale/shared';
 import { sendTelegramMessage } from './integrations/telegram';
 import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
@@ -47,12 +48,13 @@ async function updatePerformanceMetrics(): Promise<void> {
 
     const { data: models } = await supabase
         .from('models')
-        .select('id, phone, bio, persona')
+        .select('id, phone, bio, persona, enabled_platforms')
         .eq('status', 'active');
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'reddit')) continue;
         try {
             // 1. Update individual post metrics
             await updatePostMetrics(model.id);

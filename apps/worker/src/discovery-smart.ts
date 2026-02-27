@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
+import { isPlatformEnabled } from '@velvetscale/shared';
 import { sendTelegramMessage } from './integrations/telegram';
 import Anthropic from '@anthropic-ai/sdk';
 
@@ -34,19 +35,20 @@ export function stopSubDiscovery(): void {
 }
 
 /**
- * Main discovery loop — runs for all active models
+ * Main discovery loop — runs for all active models with reddit enabled
  */
 async function discoverNewSubs(): Promise<void> {
     const supabase = getSupabaseAdmin();
 
     const { data: models } = await supabase
         .from('models')
-        .select('id, phone, bio, persona')
+        .select('id, phone, bio, persona, enabled_platforms')
         .eq('status', 'active');
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'reddit')) continue;
         try {
             await discoverForModel(model);
         } catch (err) {

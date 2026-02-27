@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
+import { isPlatformEnabled } from '@velvetscale/shared';
 import { sendDM, checkNewDMs, lookupUserByHandle, hasWriteBudget } from './integrations/twitter';
 import { sendTelegramMessage } from './integrations/telegram';
 import Anthropic from '@anthropic-ai/sdk';
@@ -55,13 +56,14 @@ async function prospectCollabs(): Promise<void> {
 
     const { data: models } = await supabase
         .from('models')
-        .select('id, phone, bio, persona, twitter_handle, twitter_access_token')
+        .select('id, phone, bio, persona, twitter_handle, twitter_access_token, enabled_platforms')
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'twitter')) continue;
         try {
             if (!await hasWriteBudget(model.id, 5)) continue; // Need budget for DMs
 
@@ -205,13 +207,14 @@ async function checkDMResponses(): Promise<void> {
 
     const { data: models } = await supabase
         .from('models')
-        .select('id, phone, twitter_access_token')
+        .select('id, phone, twitter_access_token, enabled_platforms')
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'twitter')) continue;
         try {
             await processNewDMs(model.id, model.phone);
         } catch (err) {

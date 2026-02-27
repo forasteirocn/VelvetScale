@@ -14,6 +14,7 @@ export interface Model {
     persona?: string;
     status: 'pending' | 'active' | 'suspended';
     plan: 'basic' | 'pro' | 'enterprise';
+    enabled_platforms?: { reddit?: boolean; twitter?: boolean };
     created_at: string;
 }
 
@@ -175,4 +176,18 @@ export interface WhatsAppWebhookPayload {
             field: string;
         }>;
     }>;
+}
+
+// --- Platform Toggle Helper ---
+
+/**
+ * Check if a platform is enabled for a model.
+ * Default: reddit=true, twitter=false (for new models).
+ */
+export function isPlatformEnabled(
+    model: { enabled_platforms?: any },
+    platform: 'reddit' | 'twitter'
+): boolean {
+    if (!model.enabled_platforms) return platform === 'reddit';
+    return model.enabled_platforms[platform] === true;
 }

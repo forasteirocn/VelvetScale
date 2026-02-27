@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
+import { isPlatformEnabled } from '@velvetscale/shared';
 import Anthropic from '@anthropic-ai/sdk';
 
 // =============================================
@@ -38,15 +39,16 @@ export function stopKarmaBuilder(): void {
 async function buildKarma(): Promise<void> {
     const supabase = getSupabaseAdmin();
 
-    // Get all active models
+    // Get all active models with reddit enabled
     const { data: models } = await supabase
         .from('models')
-        .select('id, persona, bio')
+        .select('id, persona, bio, enabled_platforms')
         .eq('status', 'active');
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'reddit')) continue;
         try {
             await buildKarmaForModel(model);
         } catch (err) {

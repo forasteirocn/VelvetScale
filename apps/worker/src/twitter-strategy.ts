@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
+import { isPlatformEnabled } from '@velvetscale/shared';
 import { postTweet, postReply, hasWriteBudget, getMonthlyWriteCount } from './integrations/twitter';
 import { sendTelegramMessage } from './integrations/telegram';
 import Anthropic from '@anthropic-ai/sdk';
@@ -44,13 +45,14 @@ async function processTwitterPosts(): Promise<void> {
     // Get active models with Twitter credentials
     const { data: models } = await supabase
         .from('models')
-        .select('id, phone, bio, persona, twitter_handle, twitter_access_token')
+        .select('id, phone, bio, persona, twitter_handle, twitter_access_token, enabled_platforms')
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
     if (!models?.length) return;
 
     for (const model of models) {
+        if (!isPlatformEnabled(model, 'twitter')) continue;
         try {
             // Check write budget
             if (!await hasWriteBudget(model.id, 3)) { // Need at least 3 (post + 2 replies)
