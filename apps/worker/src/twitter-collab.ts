@@ -48,7 +48,7 @@ export function stopCollabHunter(): void {
 }
 
 // =============================================
-// 1. Prospect potential collab partners
+// 1. Prospect potential collab partners (suggestion only — no auto-DMs)
 // =============================================
 
 async function prospectCollabs(): Promise<void> {
@@ -65,9 +65,7 @@ async function prospectCollabs(): Promise<void> {
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;
         try {
-            if (!await hasWriteBudget(model.id, 5)) continue; // Need budget for DMs
-
-            await findAndContactPartners(model);
+            await suggestCollabPartners(model);
         } catch (err) {
             console.error(`❌ Collab hunter error for ${model.id.substring(0, 8)}:`, err);
         }
@@ -75,9 +73,10 @@ async function prospectCollabs(): Promise<void> {
 }
 
 /**
- * Find potential S4S partners and send DMs
+ * Find potential S4S partners and SUGGEST via Telegram (no auto-DMs).
+ * Model sends the DM manually — keeps us policy-compliant.
  */
-async function findAndContactPartners(model: {
+async function suggestCollabPartners(model: {
     id: string;
     phone: string;
     bio: string;
@@ -86,17 +85,15 @@ async function findAndContactPartners(model: {
 }): Promise<void> {
     const supabase = getSupabaseAdmin();
 
-    // Get handles we've already contacted
+    // Get handles we've already suggested
     const { data: existingCollabs } = await supabase
         .from('twitter_collabs')
         .select('target_handle')
         .eq('model_id', model.id);
 
-    const alreadyContacted = new Set((existingCollabs || []).map(c => c.target_handle.toLowerCase()));
+    const alreadySuggested = new Set((existingCollabs || []).map(c => c.target_handle.toLowerCase()));
 
     // Find potential partners
-    // Strategy: use known handles from the same niche
-    // In the future, this can be enhanced with TwitterAPI.io search
     const candidates = await findCandidates(model);
 
     if (!candidates.length) {
@@ -104,69 +101,65 @@ async function findAndContactPartners(model: {
         return;
     }
 
-    // Filter out already contacted
-    const newCandidates = candidates.filter(c => !alreadyContacted.has(c.handle.toLowerCase()));
+    // Filter out already suggested
+    const newCandidates = candidates.filter(c => !alreadySuggested.has(c.handle.toLowerCase()));
+    if (!newCandidates.length) return;
 
-    // Send DMs to top 2-3 candidates per day
-    let sent = 0;
+    // Look up real profiles for top 3
+    const profiles: Array<{ handle: string; reason: string; followers: number; bio: string }> = [];
+
     for (const candidate of newCandidates.slice(0, 3)) {
-        if (!await hasWriteBudget(model.id, 1)) break;
-
-        // Look up user ID
         const user = await lookupUserByHandle(model.id, candidate.handle);
-        if (!user) {
-            console.log(`  ⚠️ Could not find @${candidate.handle}`);
-            continue;
-        }
+        if (!user) continue;
 
-        // Generate personalized DM
-        const dmText = await generateCollabDM(
-            model.persona || '',
-            candidate.handle,
-            user.description,
-            user.followers
-        );
+        profiles.push({
+            handle: candidate.handle,
+            reason: candidate.reason,
+            followers: user.followers,
+            bio: user.description.substring(0, 80),
+        });
 
-        if (!dmText) continue;
-
-        // Send DM
-        const result = await sendDM(model.id, user.id, dmText);
-
-        if (result.success) {
-            // Save to twitter_collabs
-            await supabase.from('twitter_collabs').insert({
-                model_id: model.id,
-                target_handle: candidate.handle,
-                target_user_id: user.id,
-                followers_count: user.followers,
-                status: 'dm_sent',
-                dm_text: dmText,
-            });
-
-            sent++;
-            console.log(`  📩 S4S DM sent to @${candidate.handle} (${user.followers} followers)`);
-
-            // Wait between DMs
-            await new Promise(r => setTimeout(r, 5000));
-        }
+        // Save as suggested
+        await supabase.from('twitter_collabs').insert({
+            model_id: model.id,
+            target_handle: candidate.handle,
+            target_user_id: user.id,
+            followers_count: user.followers,
+            status: 'suggested',
+            dm_text: null,
+        });
     }
 
-    if (sent > 0 && model.phone) {
-        await sendTelegramMessage(model.phone,
-            `🤝 *Collab Hunter:* Enviei ${sent} DM(s) de S4S hoje!\n\nVocê será avisada quando responderem.`
-        );
+    // Send suggestions via Telegram
+    if (profiles.length > 0 && model.phone) {
+        let msg = `🤝 *Collab Hunter — Sugestões de S4S:*\n\n`;
+        msg += `Encontrei ${profiles.length} perfis bons pra collab:\n\n`;
+
+        for (const p of profiles) {
+            msg += `🔹 *@${p.handle}* (${(p.followers / 1000).toFixed(1)}K seguidores)\n`;
+            msg += `   ${p.reason}\n`;
+            msg += `   Bio: "${p.bio}"\n\n`;
+        }
+
+        msg += `_Mande a DM você mesma pelo app do Twitter!_\n`;
+        msg += `_Se responderem, eu aviso e ajudo com a conversa 💬_`;
+
+        await sendTelegramMessage(model.phone, msg);
+    }
+
+    if (profiles.length > 0) {
+        console.log(`  🤝 Suggested ${profiles.length} collab partners via Telegram`);
     }
 }
 
 /**
- * Find candidate creators for collaboration
- * Currently uses a curated approach — can be enhanced with TwitterAPI.io
+ * Find candidate creators for collaboration.
+ * Targets specific niches and geographic audiences.
  */
 async function findCandidates(model: {
     id: string;
     bio: string;
 }): Promise<Array<{ handle: string; reason: string }>> {
-    // Strategy 1: Ask Claude to suggest handles based on the model's niche
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
@@ -174,14 +167,28 @@ async function findCandidates(model: {
             system: `You help find Twitter/X creators for potential S4S (shoutout for shoutout) partnerships.
 Given a model's bio, suggest 5-10 Twitter handles of real creators in similar niches who might be open to S4S.
 
+TARGET NICHES (high conversion for this model):
+- Bumbum / booty content creators
+- Morenas / brunette models
+- Natural body hair / hairy aesthetic
+- Anal content creators
+- Brazilian-style sensual content
+
+GEOGRAPHIC PREFERENCE (target audiences):
+- North American creators (US/Canada)
+- European creators (UK, Spain, France, Germany, Italy)
+- Japanese creators
+- These audiences have the highest conversion rate
+
 CRITERIA:
-- Similar niche/aesthetic
+- Similar niche/aesthetic to the niches above
 - 10k-100k followers (sweet spot — not too big to ignore, not too small)
 - Active in the last week
-- English-speaking
+- Content creators with OnlyFans/Fansly/similar links
+- Preferably NOT Brazilian (we want to reach international audiences)
 
 Respond in JSON format:
-[{"handle": "username_without_@", "reason": "brief reason for compatibility"}]
+[{"handle": "username_without_@", "reason": "brief reason in Portuguese"}]
 
 Only respond with the JSON array.`,
             messages: [{

@@ -139,28 +139,29 @@ async function generatePresenceContent(
     bio: string
 ): Promise<string | null> {
     const prompts: Record<PresenceType, string> = {
-        poll: `Create a fun poll/rating tweet. Something like "Rate this vibe 1-10" or "Pick one: morning or night posts?" Keep it casual, flirty, and interactive. Add a few emoji options for people to reply with.`,
-        question: `Create a question tweet that invites replies. Something like "what should I post next?" or "morning or evening selfies?" Make it feel genuine and engaging.`,
-        hot_take: `Create a casual opinion tweet about everyday life. Something relatable like "coffee > sleep" or a funny observation. Keep it light and personality-driven.`,
-        behind_scenes: `Create a casual "day in my life" or behind-the-scenes tweet. Something like "3am editing photos again 📸" or "gym then selfies, the routine". Make it feel authentic.`,
-        thirst_text: `Create a flirty text-only tweet that gets engagement. Something teasing like "feeling bold today 👀" or "should I post what I just took?" Keep it suggestive but not explicit.`,
+        poll: `Crie um tweet divertido de enquete/avaliação. Algo como "nota de 1 a 10?" ou "escolham: fotos de manhã ou de noite?" Casual, flirty e interativo. Coloque opções de emoji.`,
+        question: `Crie um tweet com pergunta que convide respostas. Algo como "oq devo postar?" ou "selfie de manhã ou de noite?" Genuíno e envolvente.`,
+        hot_take: `Crie um tweet casual com opinião sobre o dia a dia. Algo relatável tipo "café > dormir" ou alguma observação engraçada. Leve e com personalidade.`,
+        behind_scenes: `Crie um tweet casual de bastidores. Algo como "3h da manhã editando foto 📸" ou "academia e depois selfie, a rotina". Autêntico.`,
+        thirst_text: `Crie um tweet flirty só de texto. Algo provocante tipo "tô ousada hoje 👀" ou "posto oq acabei de tirar?" Sugestivo mas não explícito.`,
     };
 
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 200,
-            system: `You are a content creator on Twitter/X.
-Persona: ${persona || 'flirty, confident, fun'}
-Bio: ${bio || 'content creator'}
+            system: `Você é uma criadora de conteúdo brasileira no Twitter/X.
+Persona: ${persona || 'flirty, confiante, divertida'}
+Bio: ${bio || 'criadora de conteúdo'}
 
-Rules:
-- Max 200 characters
-- 1-2 emojis max
-- Casual, lowercase is fine
-- NO links, NO promotions, NO hashtags
-- Make it feel natural and authentic
-- Output ONLY the tweet text`,
+Regras:
+- Max 200 caracteres
+- 1-2 emojis no máximo
+- Casual, tom informal brasileiro
+- SEM links, SEM promoções, SEM hashtags
+- Natural e autêntico
+- Escreva em Português BR
+- Saída APENAS o texto do tweet`,
             messages: [{
                 role: 'user',
                 content: prompts[type],
@@ -170,7 +171,7 @@ Rules:
         const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
         if (!text || text.length > 280) return null;
 
-        const refusals = ['i can\'t', 'i cannot', 'as an ai', 'i apologize'];
+        const refusals = ['i can\'t', 'i cannot', 'as an ai', 'i apologize', 'não posso'];
         if (refusals.some(r => text.toLowerCase().includes(r))) return null;
 
         return text;

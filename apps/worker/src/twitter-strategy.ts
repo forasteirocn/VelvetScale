@@ -260,7 +260,7 @@ function isRefusal(text: string): boolean {
 }
 
 /**
- * Adapt a caption for Twitter — translate to English and style it casually
+ * Adapt a caption for Twitter — keep in Portuguese BR and style it casually
  */
 export async function adaptForTwitter(
     redditTitle: string,
@@ -271,13 +271,14 @@ export async function adaptForTwitter(
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 280,
-            system: `You are a translator. Translate the given text from Portuguese to casual English.
-Keep it short (max 200 chars), lowercase, add 1 emoji at most.
-If the text is already in English, just make it more casual.
-Output ONLY the translated text. No explanations.`,
+            system: `Você é uma criadora de conteúdo brasileira adaptando uma legenda para o Twitter/X.
+Reescreva a legenda de forma casual e envolvente em Português BR.
+Mantenha curto (max 200 chars), tom informal, adicione no máximo 1 emoji.
+Se o texto estiver em inglês, traduza para português BR casual.
+Saída APENAS o texto adaptado. Sem explicações.`,
             messages: [{
                 role: 'user',
-                content: `Translate to casual English: "${redditTitle}"`,
+                content: `Adapte para o Twitter em PT-BR: "${redditTitle}"`,
             }],
         });
 
@@ -297,26 +298,26 @@ Output ONLY the translated text. No explanations.`,
 }
 
 /**
- * Generate a thread reply for engagement
+ * Generate a thread reply for engagement (PT-BR)
  */
 async function generateThreadReply(persona: string): Promise<string | null> {
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 150,
-            system: `Generate a short reply to your OWN tweet as a thread.
-Keep it 1 sentence, casual, personal. Something that invites interaction.
-Persona: ${persona || 'flirty and fun'}
-NO links, NO promotion. Just a natural follow-up thought.
+            system: `Gere uma resposta curta ao seu PRÓPRIO tweet, como uma thread.
+Mantenha em 1 frase, casual, pessoal. Algo que convide interação.
+Persona: ${persona || 'flirty e divertida'}
+SEM links, SEM promoção. Apenas um pensamento natural de follow-up.
 
-Good examples:
-- "should i post more like this? 👀"
-- "the lighting was actually perfect for once"
-- "what do y'all think?"
-- "lowkey nervous posting this one"
+Bons exemplos:
+- "posto mais assim? 👀"
+- "a luz tava perfeita dessa vez"
+- "oq vcs acham?"
+- "tô nervosa de postar essa"
 
-Respond with ONLY the reply text.`,
-            messages: [{ role: 'user', content: 'Write a thread reply:' }],
+Responda APENAS o texto da reply. Em português BR.`,
+            messages: [{ role: 'user', content: 'Escreva uma reply de thread:' }],
         });
 
         const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
@@ -327,16 +328,16 @@ Respond with ONLY the reply text.`,
 }
 
 // =============================================
-// CTA Rotation (Fan Conversion)
+// CTA Rotation (Fan Conversion) — PT-BR
 // =============================================
 
 const CTAs = [
-    'link in bio 👀',
-    '🔗 in bio',
-    'more on my page 💕',
-    'you know where to find me 😏',
-    'DM me 💌',
-    'check my bio 🔥',
+    'link na bio 👀',
+    '🔗 na bio',
+    'tem mais no meu perfil 💕',
+    'vcs sabem onde me encontrar 😏',
+    'chama na DM 💌',
+    'olha minha bio 🔥',
     '', // Sometimes no CTA (feels more natural)
     '',
     '',
