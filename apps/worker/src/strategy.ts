@@ -1,9 +1,10 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
-import { improveCaption, pickBestSubForCaption, analyzeImage, generateABTitles, type ImageAnalysis } from './integrations/claude';
-import { validatePostBeforeSubmit } from './anti-ban';
+import { improveCaption, pickBestSubForCaption, analyzeImage, generateABTitles, type ImageAnalysis, type SubRulesContext } from './integrations/claude';
+import { validatePostBeforeSubmit, getSubRules, validateTitleFormat } from './anti-ban';
 import { getLearningSummary, type LearningSummary } from './learning';
 import Anthropic from '@anthropic-ai/sdk';
+import axios from 'axios';
 
 // =============================================
 // VelvetScale Strategy Engine
@@ -26,6 +27,62 @@ interface PostStrategy {
     title: string;
     scheduledFor: Date;
     reason: string;
+}
+
+/**
+ * Build SubRulesContext for a subreddit — fetches rules, top titles, and removal history
+ */
+async function buildSubRulesContext(subreddit: string, modelId?: string): Promise<SubRulesContext | null> {
+    try {
+        const rules = await getSubRules(subreddit);
+        if (!rules) return null;
+
+        const context: SubRulesContext = {
+            titleRules: rules.titleRules || [],
+            bannedWords: rules.bannedWords || [],
+            otherRules: rules.otherRules || [],
+        };
+
+        // Phase 4: Fetch top titles from sub as style reference
+        try {
+            const resp = await axios.get(`https://www.reddit.com/r/${subreddit}/hot.json?limit=8`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                timeout: 10000,
+            });
+            const posts = resp.data?.data?.children || [];
+            context.topTitles = posts
+                .filter((p: any) => p.kind === 't3' && p.data?.title && p.data?.score > 10)
+                .map((p: any) => p.data.title as string)
+                .slice(0, 5);
+        } catch { /* ignore */ }
+
+        // Phase 3: Fetch removal history for this sub
+        if (modelId) {
+            try {
+                const supabase = getSupabaseAdmin();
+                const { data: removedPosts } = await supabase
+                    .from('posts')
+                    .select('title, removal_reason')
+                    .eq('model_id', modelId)
+                    .eq('subreddit', subreddit)
+                    .eq('status', 'deleted')
+                    .not('removal_reason', 'is', null)
+                    .order('published_at', { ascending: false })
+                    .limit(5);
+
+                if (removedPosts && removedPosts.length > 0) {
+                    context.removalHistory = removedPosts.map(p => ({
+                        title: p.title || '(unknown)',
+                        reason: p.removal_reason || 'unknown',
+                    }));
+                }
+            } catch { /* ignore */ }
+        }
+
+        return context;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -147,12 +204,14 @@ export async function analyzeAndSchedule(
         let titleVariants: Array<{ title: string; style: string }> = [];
         if (strategy.length > 1) {
             try {
+                const subRulesCtx = await buildSubRulesContext(strategy[0].subreddit, modelId);
                 const abTitles = await generateABTitles(
                     photo.caption || '🔥',
                     strategy[0].subreddit,
                     model.bio || '',
                     model.persona || '',
-                    imageAnalysis
+                    imageAnalysis,
+                    subRulesCtx
                 );
                 titleVariants = abTitles;
                 console.log(`  🎯 A/B titles: ${abTitles.map(t => `"${t.title}" (${t.style})`).join(', ')}`);
@@ -170,13 +229,15 @@ export async function analyzeAndSchedule(
                 titleStyle = titleVariants[planIndex].style;
             } else {
                 try {
+                    const subRulesCtx = await buildSubRulesContext(plan.subreddit, modelId);
                     const improved = await improveCaption(
                         photo.caption || '🔥',
                         plan.subreddit,
                         model.bio || '',
                         model.persona || '',
                         { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
-                        imageAnalysis
+                        imageAnalysis,
+                        subRulesCtx
                     );
                     title = improved.title;
                 } catch { /* Use Claude's strategy title as fallback */ }
@@ -488,15 +549,47 @@ Which ONE sub is the best match?`,
     // Improve caption (with visual context)
     let title = caption;
     try {
+        const subRulesCtx = await buildSubRulesContext(targetSub, modelId);
         const improved = await improveCaption(
             caption || '🔥',
             targetSub,
             model.bio || '',
             model.persona || '',
             { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
-            imageAnalysis
+            imageAnalysis,
+            subRulesCtx
         );
         title = improved.title;
+        console.log(`  📝 Título gerado: "${title}"`);
+        if (subRulesCtx?.titleRules?.length) {
+            console.log(`  📋 Regras aplicadas: ${subRulesCtx.titleRules.join(', ')}`);
+        }
+
+        // Phase 2: Validate title format and retry if violations found
+        const titleCheck = await validateTitleFormat(title, targetSub);
+        if (!titleCheck.ok) {
+            console.log(`  🔄 Title rejected: ${titleCheck.violations.join(', ')}`);
+            for (let retry = 0; retry < 2; retry++) {
+                try {
+                    const retryImproved = await improveCaption(
+                        `${caption}\n\n⚠️ PREVIOUS TITLE WAS REJECTED: "${title}"\nVIOLATIONS: ${titleCheck.violations.join(', ')}\nGenerate a NEW title that fixes these issues.`,
+                        targetSub,
+                        model.bio || '',
+                        model.persona || '',
+                        { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                        imageAnalysis,
+                        subRulesCtx
+                    );
+                    title = retryImproved.title;
+                    console.log(`  🔄 Retry ${retry + 1}: "${title}"`);
+                    const recheck = await validateTitleFormat(title, targetSub);
+                    if (recheck.ok) {
+                        console.log(`  ✅ Title passed validation`);
+                        break;
+                    }
+                } catch { break; }
+            }
+        }
     } catch { /* use original */ }
 
     // Validate post against sub rules before submitting
@@ -549,13 +642,15 @@ Which ONE sub is the best match?`,
 
         // Generate new title for this sub
         try {
+            const retryRulesCtx = await buildSubRulesContext(currentSub, modelId);
             const improved = await improveCaption(
                 caption || '🔥',
                 currentSub,
                 model.bio || '',
                 model.persona || '',
                 { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
-                imageAnalysis
+                imageAnalysis,
+                retryRulesCtx
             );
             currentTitle = improved.title;
         } catch { /* keep previous title */ }

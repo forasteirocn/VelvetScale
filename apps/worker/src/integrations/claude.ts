@@ -56,17 +56,17 @@ async function fetchImageAsBase64(imageUrl: string): Promise<{ data: string; med
 export async function analyzeImage(imageUrl: string): Promise<ImageAnalysis | null> {
     const maxRetries = 4;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-        const imageData = await fetchImageAsBase64(imageUrl);
-        if (!imageData) return null;
+        try {
+            const imageData = await fetchImageAsBase64(imageUrl);
+            if (!imageData) return null;
 
-        if (attempt > 1) console.log(`🔄 Tentativa ${attempt}/${maxRetries} de análise de imagem...`);
-        console.log('🧠 Analisando foto com Claude Vision...');
+            if (attempt > 1) console.log(`🔄 Tentativa ${attempt}/${maxRetries} de análise de imagem...`);
+            console.log('🧠 Analisando foto com Claude Vision...');
 
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 400,
-            system: `You are an expert at analyzing photos for Reddit posting strategy.
+            const response = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 400,
+                system: `You are an expert at analyzing photos for Reddit posting strategy.
 Analyze the photo and return a JSON object with PRECISE details.
 
 Focus on:
@@ -91,44 +91,44 @@ Respond with ONLY valid JSON:
   "suggestedNiches": ["niche1", "niche2", "niche3"],
   "description": "One-sentence summary of the photo"
 }`,
-            messages: [{
-                role: 'user',
-                content: [
-                    {
-                        type: 'image',
-                        source: {
-                            type: 'base64',
-                            media_type: imageData.mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
-                            data: imageData.data,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: imageData.mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
+                                data: imageData.data,
+                            },
                         },
-                    },
-                    {
-                        type: 'text',
-                        text: 'Analyze this photo for Reddit posting strategy.',
-                    },
-                ],
-            }],
-        });
+                        {
+                            type: 'text',
+                            text: 'Analyze this photo for Reddit posting strategy.',
+                        },
+                    ],
+                }],
+            });
 
-        const text = response.content[0].type === 'text' ? response.content[0].text : '';
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const analysis = JSON.parse(jsonMatch[0]) as ImageAnalysis;
-            console.log(`  👁️ Foto: ${analysis.description}`);
-            console.log(`  🎯 Nichos: ${analysis.suggestedNiches.join(', ')}`);
-            return analysis;
+            const text = response.content[0].type === 'text' ? response.content[0].text : '';
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const analysis = JSON.parse(jsonMatch[0]) as ImageAnalysis;
+                console.log(`  👁️ Foto: ${analysis.description}`);
+                console.log(`  🎯 Nichos: ${analysis.suggestedNiches.join(', ')}`);
+                return analysis;
+            }
+        } catch (err) {
+            const isOverloaded = err instanceof Error && err.message.includes('529');
+            if (isOverloaded && attempt < maxRetries) {
+                const wait = attempt * 10000;
+                console.log(`⏳ API sobrecarregada, aguardando ${wait / 1000}s antes de tentar novamente...`);
+                await new Promise(r => setTimeout(r, wait));
+                continue;
+            }
+            console.error('⚠️ Image analysis failed:', err instanceof Error ? err.message : err);
+            return null;
         }
-    } catch (err) {
-        const isOverloaded = err instanceof Error && err.message.includes('529');
-        if (isOverloaded && attempt < maxRetries) {
-            const wait = attempt * 10000;
-            console.log(`⏳ API sobrecarregada, aguardando ${wait/1000}s antes de tentar novamente...`);
-            await new Promise(r => setTimeout(r, wait));
-            continue;
-        }
-        console.error('⚠️ Image analysis failed:', err instanceof Error ? err.message : err);
-        return null;
-    }
     } // end retry loop
     return null;
 }
@@ -252,6 +252,17 @@ Generate an engaging, organic post for this subreddit. No links, no promotion.`,
 }
 
 /**
+ * Context about subreddit rules for title generation
+ */
+export interface SubRulesContext {
+    titleRules: string[];     // e.g. ["No emojis", "Must include [F] tag"]
+    bannedWords: string[];    // e.g. ["onlyfans", "subscribe"]
+    otherRules: string[];     // e.g. ["Must be verified to post"]
+    topTitles?: string[];     // Top-performing titles from this sub (style reference)
+    removalHistory?: Array<{ title: string; reason: string }>; // Past mistakes
+}
+
+/**
  * Improve a model's caption for a specific subreddit
  * The model provides the original text, Claude adapts it without adding explicit content
  */
@@ -261,7 +272,8 @@ export async function improveCaption(
     modelBio: string,
     persona: string,
     links: { onlyfans?: string; privacy?: string },
-    imageAnalysis?: ImageAnalysis | null
+    imageAnalysis?: ImageAnalysis | null,
+    subRules?: SubRulesContext | null
 ): Promise<{ title: string; body: string }> {
     // Build context from image analysis if available
     const visualContext = imageAnalysis
@@ -274,6 +286,32 @@ export async function improveCaption(
 - Description: ${imageAnalysis.description}`
         : '';
 
+    // Build rules context
+    const hasEmojiRule = subRules?.titleRules?.some(r =>
+        r.toLowerCase().includes('emoji') || r.toLowerCase().includes('no emoji')
+    ) || false;
+
+    const rulesSection = subRules && (subRules.titleRules.length > 0 || subRules.bannedWords.length > 0)
+        ? `\n\n⚠️ SUBREDDIT-SPECIFIC RULES FOR r/${subreddit} (MUST FOLLOW):
+${subRules.titleRules.map(r => `- ${r}`).join('\n')}
+${subRules.bannedWords.length > 0 ? `- BANNED WORDS (never use): ${subRules.bannedWords.join(', ')}` : ''}
+${subRules.otherRules.map(r => `- ${r}`).join('\n')}`
+        : '';
+
+    const topTitlesSection = subRules?.topTitles && subRules.topTitles.length > 0
+        ? `\n\nTOP-PERFORMING TITLES in r/${subreddit} right now (mimic this style):
+${subRules.topTitles.map(t => `- "${t}"`).join('\n')}`
+        : '';
+
+    const removalSection = subRules?.removalHistory && subRules.removalHistory.length > 0
+        ? `\n\n🚫 PREVIOUS MISTAKES (these titles were REMOVED from this sub — do NOT repeat):
+${subRules.removalHistory.map(r => `- "${r.title}" → Removed because: ${r.reason}`).join('\n')}`
+        : '';
+
+    const emojiGuidance = hasEmojiRule
+        ? '- DO NOT use any emojis in the title — this sub bans them'
+        : '- Use emojis sparingly (0-1 max) ONLY if natural. When in doubt, no emojis.';
+
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
@@ -282,6 +320,7 @@ The model wrote a caption for their photo post. Your job is to:
 1. Create a catchy Reddit title that gets upvotes
 2. Keep it short, natural, and engaging
 3. ${imageAnalysis ? 'USE the photo analysis to make the title match what\'s actually in the photo' : 'Make the title engaging based on the caption'}
+4. STRICTLY follow the subreddit's specific rules below
 
 STRICT RULES:
 - NEVER include any links or URLs
@@ -292,20 +331,10 @@ STRICT RULES:
 - Match the subreddit's vibe perfectly
 - Keep it short (under 100 characters ideally)
 - Use curiosity, humor, or relatability — NOT promotion
+${emojiGuidance}
 - ${imageAnalysis ? 'Reference the photo content naturally (e.g. if she\'s at the beach, mention it)' : ''}
 - Persona: ${persona || 'friendly, flirty, and approachable'}
-
-Examples of GOOD titles:
-- "Finally felt confident enough to share 🙈"
-- "Sunday morning vibes ☀️"
-- "Do you prefer brunettes or blondes? 😏"
-- "First post here, be nice!"
-- "My new tattoo needed some attention 😏" (if photo shows tattoo)
-
-Examples of BAD titles (never do this):
-- "Check out my OF link in bio!"
-- "New content on my page 🔥"
-- "Subscribe for more"
+${rulesSection}${topTitlesSection}${removalSection}
 
 Respond with JSON: { "title": "..." }`,
         messages: [
@@ -596,11 +625,24 @@ export async function generateABTitles(
     subreddit: string,
     modelBio: string,
     persona: string,
-    imageAnalysis?: ImageAnalysis | null
+    imageAnalysis?: ImageAnalysis | null,
+    subRules?: SubRulesContext | null
 ): Promise<TitleVariant[]> {
     const visualContext = imageAnalysis
         ? `\nPhoto: ${imageAnalysis.description} (${imageAnalysis.setting}, ${imageAnalysis.outfit}, ${imageAnalysis.mood})`
         : '';
+
+    const hasEmojiRule = subRules?.titleRules?.some(r =>
+        r.toLowerCase().includes('emoji') || r.toLowerCase().includes('no emoji')
+    ) || false;
+
+    const rulesSection = subRules && (subRules.titleRules.length > 0 || subRules.bannedWords.length > 0)
+        ? `\n\n⚠️ SUBREDDIT-SPECIFIC RULES FOR r/${subreddit} (ALL titles MUST follow these):\n${subRules.titleRules.map(r => `- ${r}`).join('\n')}\n${subRules.bannedWords.length > 0 ? `- BANNED WORDS: ${subRules.bannedWords.join(', ')}` : ''}`
+        : '';
+
+    const emojiNote = hasEmojiRule
+        ? '\n- DO NOT use any emojis — this sub bans them'
+        : '\n- Use emojis sparingly (0-1 max). When in doubt, no emojis.';
 
     try {
         const response = await anthropic.messages.create({
@@ -612,14 +654,14 @@ ${persona ? `Persona: ${persona}` : ''}
 
 STRATEGIES:
 1. "curiosity" — Make them curious to see the photo (e.g. "What do you think of my new look?")
-2. "humor" — Light humor or playfulness (e.g. "My cat judges me when I take selfies 😂")
-3. "emotional" — Create connection (e.g. "Finally feeling confident ❤️")
+2. "humor" — Light humor or playfulness (e.g. "My cat judges me when I take selfies")
+3. "emotional" — Create connection (e.g. "Finally feeling confident")
 
 RULES:
 - Never include links, promotions, or call-to-actions
 - Under 100 characters each
 - Write in English
-- Match the sub's culture
+- Match the sub's culture${emojiNote}${rulesSection}
 
 Respond with ONLY valid JSON array:
 [

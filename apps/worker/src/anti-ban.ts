@@ -322,6 +322,118 @@ export async function validatePostBeforeSubmit(
     return result;
 }
 
+/**
+ * Phase 2: Validate title format against sub-specific rules
+ * Uses Claude to check for violations like emoji bans, required tags, etc.
+ */
+export async function validateTitleFormat(
+    title: string,
+    subredditName: string,
+    rules?: SubRules | null
+): Promise<{ ok: boolean; violations: string[] }> {
+    if (!rules) {
+        rules = await getSubRules(subredditName);
+    }
+    if (!rules || (!rules.titleRules.length && !rules.bannedWords.length)) {
+        return { ok: true, violations: [] };
+    }
+
+    const violations: string[] = [];
+
+    // Quick checks that don't need Claude
+    for (const word of rules.bannedWords) {
+        if (title.toLowerCase().includes(word.toLowerCase())) {
+            violations.push(`Contains banned word: "${word}"`);
+        }
+    }
+
+    // Check emoji presence if rules mention no emojis
+    const noEmojiRule = rules.titleRules.some(r =>
+        r.toLowerCase().includes('emoji') || r.toLowerCase().includes('no emoji')
+    );
+    if (noEmojiRule) {
+        const emojiRegex = /[\u{1F600}-\u{1F9FF}\u{2600}-\u{2B55}\u{FE00}-\u{FE0F}\u{200D}\u{1F1E0}-\u{1F1FF}]/u;
+        if (emojiRegex.test(title)) {
+            violations.push('Title contains emoji but sub bans emojis');
+        }
+    }
+
+    // Use Claude for nuanced rule checking if titleRules exist
+    if (rules.titleRules.length > 0 && violations.length === 0) {
+        try {
+            const response = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 200,
+                system: `You check if a Reddit post title follows subreddit rules.
+If the title violates ANY rule, list each violation.
+If the title is OK, respond with ONLY: {"ok": true, "violations": []}
+Otherwise: {"ok": false, "violations": ["violation description"]}`,
+                messages: [{
+                    role: 'user',
+                    content: `Title: "${title}"
+Subreddit: r/${subredditName}
+
+Title rules:
+${rules.titleRules.map(r => `- ${r}`).join('\n')}
+
+Does this title follow ALL rules?`,
+                }],
+            });
+
+            const text = response.content[0].type === 'text' ? response.content[0].text : '';
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0]) as { ok: boolean; violations: string[] };
+                if (!result.ok && result.violations?.length) {
+                    violations.push(...result.violations);
+                }
+            }
+        } catch { /* ignore Claude errors, pass validation */ }
+    }
+
+    return { ok: violations.length === 0, violations };
+}
+
+/**
+ * Phase 3: Analyze WHY a post was removed by comparing title + sub rules
+ */
+async function analyzeRemovalReason(
+    postTitle: string,
+    subreddit: string
+): Promise<string> {
+    try {
+        const rules = await getSubRules(subreddit);
+        if (!rules) return 'Unknown — could not fetch sub rules';
+
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 150,
+            system: `You analyze why a Reddit post was likely removed by moderators.
+Based on the title and sub rules, give a SHORT reason (1 sentence).
+Respond with ONLY the reason text, no JSON.`,
+            messages: [{
+                role: 'user',
+                content: `Post title: "${postTitle}"
+Subreddit: r/${subreddit}
+
+Sub rules:
+${rules.titleRules.map(r => `- ${r}`).join('\n')}
+${rules.otherRules.map(r => `- ${r}`).join('\n')}
+${rules.bannedWords.length > 0 ? `Banned words: ${rules.bannedWords.join(', ')}` : ''}
+Requires verification: ${rules.requiresVerification}
+Requires flair: ${rules.requiresFlair}
+
+Why was this post most likely removed?`,
+            }],
+        });
+
+        const reason = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
+        return reason || 'Unknown reason';
+    } catch {
+        return 'Unknown — analysis failed';
+    }
+}
+
 // =============================================
 // 3. Check for removed posts (runs hourly)
 // =============================================
@@ -338,7 +450,7 @@ async function checkRemovedPosts(): Promise<void> {
 
     const { data: recentPosts } = await supabase
         .from('posts')
-        .select('id, model_id, external_url, subreddit, status, content')
+        .select('id, model_id, external_url, subreddit, status, content, title')
         .eq('status', 'published')
         .eq('platform', 'reddit')
         .gte('published_at', twoDaysAgo)
@@ -359,10 +471,23 @@ async function checkRemovedPosts(): Promise<void> {
                 removedCount++;
                 console.log(`  🛡️ Post removed: ${post.external_url}`);
 
-                // Update post status
+                // Phase 3: Analyze WHY the post was removed
+                let removalReason = 'Post removed by subreddit moderators';
+                if (post.subreddit && post.title) {
+                    try {
+                        removalReason = await analyzeRemovalReason(post.title, post.subreddit);
+                        console.log(`  📚 Removal reason: ${removalReason}`);
+                    } catch { /* ignore */ }
+                }
+
+                // Update post status with removal reason
                 await supabase
                     .from('posts')
-                    .update({ status: 'deleted', error_message: 'Post removed by subreddit moderators' })
+                    .update({
+                        status: 'deleted',
+                        error_message: removalReason,
+                        removal_reason: removalReason,
+                    })
                     .eq('id', post.id);
 
                 // Increment posts_removed counter

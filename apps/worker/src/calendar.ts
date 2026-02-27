@@ -1,8 +1,9 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
-import { analyzeImage, improveCaption, pickBestSubForCaption, type ImageAnalysis } from './integrations/claude';
-import { validatePostBeforeSubmit } from './anti-ban';
+import { analyzeImage, improveCaption, pickBestSubForCaption, type ImageAnalysis, type SubRulesContext } from './integrations/claude';
+import { validatePostBeforeSubmit, getSubRules } from './anti-ban';
 import { getLearningSummary } from './learning';
+import axios from 'axios';
 
 // =============================================
 // VelvetScale Autonomous Calendar
@@ -174,13 +175,38 @@ async function processBatch(key: string): Promise<void> {
         // Generate title
         let title = photo.caption || '🔥';
         try {
+            // Build sub rules context for this sub
+            let subRulesCtx: SubRulesContext | null = null;
+            try {
+                const rules = await getSubRules(bestSub);
+                if (rules) {
+                    subRulesCtx = {
+                        titleRules: rules.titleRules || [],
+                        bannedWords: rules.bannedWords || [],
+                        otherRules: rules.otherRules || [],
+                    };
+                    // Fetch top titles for style reference
+                    try {
+                        const resp = await axios.get(`https://www.reddit.com/r/${bestSub}/hot.json?limit=5`, {
+                            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                            timeout: 10000,
+                        });
+                        subRulesCtx.topTitles = (resp.data?.data?.children || [])
+                            .filter((p: any) => p.data?.score > 10)
+                            .map((p: any) => p.data.title as string)
+                            .slice(0, 5);
+                    } catch { /* ignore */ }
+                }
+            } catch { /* ignore */ }
+
             const improved = await improveCaption(
                 photo.caption || '🔥',
                 bestSub,
                 model.bio || '',
                 model.persona || '',
                 { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
-                analysis
+                analysis,
+                subRulesCtx
             );
             title = improved.title;
         } catch { /* use original */ }
