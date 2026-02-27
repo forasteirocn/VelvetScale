@@ -68,6 +68,12 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
     const accessSecret = process.env.TWITTER_ACCESS_SECRET;
 
     if (appKey && appSecret && accessToken && accessSecret) {
+        console.log(`  🔑 Twitter OAuth 1.0a credentials loaded:`);
+        console.log(`     appKey: ${appKey.substring(0, 5)}...${appKey.substring(appKey.length - 3)} (${appKey.length} chars)`);
+        console.log(`     appSecret: ${appSecret.substring(0, 5)}...${appSecret.substring(appSecret.length - 3)} (${appSecret.length} chars)`);
+        console.log(`     accessToken: ${accessToken.substring(0, 10)}... (${accessToken.length} chars)`);
+        console.log(`     accessSecret: ${accessSecret.substring(0, 5)}...${accessSecret.substring(accessSecret.length - 3)} (${accessSecret.length} chars)`);
+
         const client = new TwitterApi({
             appKey,
             appSecret,
@@ -75,9 +81,8 @@ export async function getTwitterClient(modelId: string): Promise<TwitterApi | nu
             accessSecret,
         });
 
-        const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // OAuth 1.0a doesn't expire
+        const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
         clientCache.set(modelId, { client, expiresAt });
-        console.log(`  🔑 Using OAuth 1.0a from .env for model ${modelId.substring(0, 8)}`);
         return client;
     }
 
