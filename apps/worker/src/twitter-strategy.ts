@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from '@velvetscale/db';
 import { isPlatformEnabled } from '@velvetscale/shared';
 import { postTweet, postReply, hasWriteBudget, getMonthlyWriteCount } from './integrations/twitter';
 import { sendTelegramMessage } from './integrations/telegram';
+import { generateSmartHashtags } from './twitter-hashtags';
 import Anthropic from '@anthropic-ai/sdk';
 
 // =============================================
@@ -134,9 +135,24 @@ async function postBestContent(model: {
         (candidate.media_urls && candidate.media_urls[0]) ||
         null;
 
+    // Add smart hashtags
+    const hashtags = await generateSmartHashtags(model.persona || '', model.bio || '', 'photo');
+
+    // Add CTA rotation (fan conversion)
+    const cta = getRandomCTA();
+
+    // Build final tweet: caption + CTA + hashtags
+    let fullTweet = twitterCaption;
+    if (cta && fullTweet.length + cta.length + 2 < 250) {
+        fullTweet += '\n\n' + cta;
+    }
+    if (hashtags && fullTweet.length + hashtags.length + 2 < 280) {
+        fullTweet += '\n\n' + hashtags;
+    }
+
     // Post the tweet
-    console.log(`  🐦 Posting to Twitter: "${twitterCaption.substring(0, 50)}..."`);
-    const result = await postTweet(model.id, twitterCaption, photoUrl || undefined);
+    console.log(`  🐦 Posting to Twitter: "${fullTweet.substring(0, 50)}..."`);
+    const result = await postTweet(model.id, fullTweet, photoUrl || undefined);
 
     if (result.success) {
         // Save to posts table
@@ -144,8 +160,8 @@ async function postBestContent(model: {
             model_id: model.id,
             platform: 'twitter',
             post_type: 'tweet',
-            title: twitterCaption,
-            content: twitterCaption,
+            title: fullTweet,
+            content: fullTweet,
             media_urls: photoUrl ? [photoUrl] : [],
             external_url: result.url,
             subreddit: null,
@@ -163,7 +179,7 @@ async function postBestContent(model: {
             const writeCount = await getMonthlyWriteCount(model.id);
             await sendTelegramMessage(
                 model.phone,
-                `🐦 *Tweet publicado!*\n\n"${twitterCaption.substring(0, 100)}"\n\n🔗 ${result.url}\n📊 Budget: ${writeCount}/400 writes este mês`
+                `🐦 *Tweet publicado!*\n\n"${fullTweet.substring(0, 100)}"\n\n🔗 ${result.url}\n📊 Budget: ${writeCount}/400 writes este mês`
             );
         }
 
@@ -173,10 +189,11 @@ async function postBestContent(model: {
             action: 'twitter_auto_post',
             platform: 'twitter',
             details: {
+                content_type: 'reddit_repurpose',
                 tweet_url: result.url,
                 source_reddit_url: candidate.external_url,
                 original_upvotes: candidate.upvotes,
-                adapted_caption: twitterCaption,
+                adapted_caption: fullTweet,
             },
         });
 
@@ -307,6 +324,26 @@ Respond with ONLY the reply text.`,
     } catch {
         return null;
     }
+}
+
+// =============================================
+// CTA Rotation (Fan Conversion)
+// =============================================
+
+const CTAs = [
+    'link in bio 👀',
+    '🔗 in bio',
+    'more on my page 💕',
+    'you know where to find me 😏',
+    'DM me 💌',
+    'check my bio 🔥',
+    '', // Sometimes no CTA (feels more natural)
+    '',
+    '',
+];
+
+function getRandomCTA(): string {
+    return CTAs[Math.floor(Math.random() * CTAs.length)];
 }
 
 // =============================================

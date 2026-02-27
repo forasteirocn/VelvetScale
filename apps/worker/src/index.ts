@@ -14,6 +14,10 @@ import { startAntiBanMonitor, stopAntiBanMonitor } from './anti-ban';
 import { startLearningEngine, stopLearningEngine } from './learning';
 import { startTwitterEngine, stopTwitterEngine } from './twitter-strategy';
 import { startCollabHunter, stopCollabHunter } from './twitter-collab';
+import { startTwitterEngagement, stopTwitterEngagement } from './twitter-engagement';
+import { startTwitterPresence, stopTwitterPresence } from './twitter-presence';
+import { startTwitterLearning, stopTwitterLearning } from './twitter-learning';
+import { startTrendRider, stopTrendRider } from './twitter-trends';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -50,6 +54,10 @@ async function main() {
         startLearningEngine();     // Aprende com resultados (24h)
         startTwitterEngine();      // Twitter content engine (4h)
         startCollabHunter();       // Twitter collab hunter (24h)
+        startTwitterEngagement();  // Twitter mention replies (2h)
+        startTwitterPresence();    // Twitter presence posts (6h)
+        startTwitterLearning();    // Twitter metrics tracking (24h)
+        startTrendRider();         // Twitter trend rider (8h)
 
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);
@@ -74,6 +82,10 @@ process.on('SIGINT', async () => {
     stopLearningEngine();
     stopTwitterEngine();
     stopCollabHunter();
+    stopTwitterEngagement();
+    stopTwitterPresence();
+    stopTwitterLearning();
+    stopTrendRider();
     await closeBrowser();
     process.exit(0);
 });
@@ -88,6 +100,10 @@ process.on('SIGTERM', async () => {
     stopLearningEngine();
     stopTwitterEngine();
     stopCollabHunter();
+    stopTwitterEngagement();
+    stopTwitterPresence();
+    stopTwitterLearning();
+    stopTrendRider();
     await closeBrowser();
     process.exit(0);
 });

@@ -366,7 +366,7 @@ async function uploadMediaWithClient(client: TwitterApi, photoUrl: string): Prom
 /**
  * Track API write usage to stay within 500/month budget
  */
-async function trackWriteUsage(modelId: string, actionType: string): Promise<void> {
+export async function trackWriteUsage(modelId: string, actionType: string): Promise<void> {
     const supabase = getSupabaseAdmin();
     await supabase.from('agent_logs').insert({
         model_id: modelId,
