@@ -21,7 +21,7 @@ let dmCheckInterval: ReturnType<typeof setInterval> | null = null;
 export function startCollabHunter(): void {
     if (collabInterval) return;
 
-    console.log('🤝 Collab Hunter iniciado (diário 18:50 BRT, checa DMs 2h)');
+    console.log('🤝 Collab Hunter iniciado (diário 19:00 BRT, checa DMs 2h)');
 
     // Schedule prospecting daily at 18:50 BRT
     scheduleAt1850BRT();
@@ -44,11 +44,11 @@ function scheduleAt1850BRT(): void {
     const localOffset = now.getTimezoneOffset(); // minutes from UTC
     const brtNow = new Date(now.getTime() + (localOffset + brtOffset) * 60 * 1000);
 
-    // Target: 18:50 BRT today
+    // Target: 19:00 BRT today
     const target = new Date(brtNow);
-    target.setHours(18, 50, 0, 0);
+    target.setHours(19, 0, 0, 0);
 
-    // If 18:50 already passed today, schedule for tomorrow
+    // If 19:00 already passed today, schedule for tomorrow
     if (brtNow >= target) {
         target.setDate(target.getDate() + 1);
     }
