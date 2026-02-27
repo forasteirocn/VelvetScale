@@ -91,89 +91,105 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             const chatId = update.message.chat.id;
             console.log(`👋 ${update.message.text} de chat ${chatId}`);
 
-            // Send in 2 messages to avoid being too long
+            // Message 1: Getting started
             await sendTelegramMessage(
                 chatId,
-                `🟣 *VelvetScale — Como usar*\n\n` +
+                `🟣 *VelvetScale — Guia Completo*\n\n` +
 
-                `*PASSO 1 — Conectar o Reddit*\n` +
-                `Digite exatamente:\n` +
-                `/login reddit seuusuario suasenha\n\n` +
-                `Exemplo:\n` +
-                `/login reddit samyof 123456\n\n` +
-                `O que acontece: o bot abre o Chrome, faz login, importa seus subreddits e te avisa quando estiver pronto.\n\n` +
-
-                `*PASSO 2 — Postar uma foto*\n` +
-                `Abra sua galeria, escolha uma foto e envie aqui com uma legenda.\n\n` +
-                `Exemplo: envie uma selfie e escreva na legenda:\n` +
-                `"bom dia gatinhos"\n\n` +
-                `O que acontece: a IA melhora sua legenda em inglês, escolhe o melhor subreddit e agenda o post pro próximo horário de pico dos EUA.\n\n` +
-
-                `*PASSO 3 — Acompanhar*\n` +
-                `Para ver seus posts agendados, digite:\n` +
-                `/fila`
-            );
-
-            await sendTelegramMessage(
-                chatId,
-                `*TODOS OS COMANDOS:*\n\n` +
+                `*PRIMEIROS PASSOS:*\n\n` +
 
                 `/login reddit usuario senha\n` +
-                `→ Conecta o Reddit (só precisa 1 vez)\n\n` +
+                `→ Conecta sua conta Reddit (1 vez só)\n` +
+                `Ex: /login reddit samyof 123456\n\n` +
 
-                `📷 Foto + legenda\n` +
-                `→ Agenda post automatico no Reddit\n\n` +
-
-                `📷 Foto + /postar na legenda\n` +
-                `→ Posta AGORA no Reddit (sem agendar)\n` +
-                `Ex: envie foto com legenda "/postar bom dia"\n\n` +
-
-                `/fila\n` +
-                `→ Mostra posts na fila de espera\n\n` +
-
-                `/cancelar\n` +
-                `→ Cancela TODOS os posts pendentes\n\n` +
-
-                `📅 Foto + /piloto na legenda\n` +
-                `→ Modo piloto: envie várias fotos e IA cria calendário semanal\n\n` +
-
-                `Estatísticas\n` +
-                `→ Mostra quantos posts foram feitos\n\n` +
-
-                `Ver engajamento\n` +
-                `→ Mostra upvotes e comentários\n\n` +
-
-                `Encontrar subreddits\n` +
-                `→ A IA sugere os melhores subs pro seu perfil\n\n` +
-
-                `Poste no Reddit sobre [tema]\n` +
-                `→ Cria e publica um post de texto\n` +
-                `Ex: "Poste no Reddit sobre fitness"\n\n` +
+                `📷 *Enviar foto + legenda*\n` +
+                `→ IA melhora legenda, escolhe sub e agenda\n` +
+                `Ex: envie selfie com legenda "bom dia"\n\n` +
 
                 `/ajuda\n` +
-                `→ Mostra essa mensagem de novo\n\n` +
+                `→ Mostra essa lista de comandos`
+            );
 
-                `*TWITTER/X:*\n\n` +
+            // Message 2: Reddit commands
+            await sendTelegramMessage(
+                chatId,
+                `*📌 REDDIT:*\n\n` +
 
-                `/twitter na legenda\n` +
-                `→ Posta foto no Twitter/X\n` +
-                `Ex: envie foto com legenda "/twitter feeling cute"\n\n` +
+                `📷 Foto + legenda\n` +
+                `→ Agenda em 3 subs nos horários de pico\n\n` +
 
-                `📷 Foto + /postar\\_tudo na legenda\n` +
+                `📷 Foto + /postar legenda\n` +
+                `→ Posta AGORA no melhor sub\n\n` +
+
+                `📅 Foto + /piloto legenda\n` +
+                `→ Modo piloto: envie várias fotos e IA cria calendário semanal\n\n` +
+
+                `/fila\n` +
+                `→ Mostra posts agendados\n\n` +
+
+                `/cancelar\n` +
+                `→ Cancela todos os posts pendentes\n\n` +
+
+                `/aprovar\n` +
+                `→ Aprova todos os subs sugeridos pela IA\n\n` +
+
+                `/aprovar NomeSub\n` +
+                `→ Aprova um sub específico\n\n` +
+
+                `*💬 COMANDOS DE TEXTO:*\n` +
+                `(digite normalmente, a IA entende)\n\n` +
+
+                `Encontrar subreddits\n` +
+                `→ IA busca os melhores subs pro perfil\n\n` +
+
+                `Poste no Reddit sobre [tema]\n` +
+                `→ Cria e publica um post de texto\n\n` +
+
+                `Estatísticas\n` +
+                `→ Total de posts e comandos\n\n` +
+
+                `Ver engajamento\n` +
+                `→ Upvotes e comentários recentes`
+            );
+
+            // Message 3: Twitter + Platform commands
+            await sendTelegramMessage(
+                chatId,
+                `*🐦 TWITTER/X:*\n\n` +
+
+                `📷 Foto + /twitter legenda\n` +
+                `→ Posta foto no Twitter\n` +
+                `Ex: foto + "/twitter feeling cute"\n\n` +
+
+                `📷 Foto + /postar\\_tudo legenda\n` +
                 `→ Posta no Reddit E Twitter ao mesmo tempo\n\n` +
 
-                `*PLATAFORMAS:*\n\n` +
+                `*🤝 COLLABS:*\n\n` +
+
+                `/aprovar\\_collab\\_ID\n` +
+                `→ Envia resposta sugerida pela IA\n\n` +
+
+                `/collab\\_reply\\_ID sua resposta\n` +
+                `→ Envia resposta personalizada\n\n` +
+
+                `*📡 PLATAFORMAS:*\n\n` +
 
                 `/plataformas\n` +
-                `→ Mostra quais plataformas estao ativadas\n\n` +
+                `→ Mostra quais estão ativadas\n\n` +
 
-                `/ativar\\_twitter ou /desativar\\_twitter\n` +
-                `→ Liga/desliga Twitter\n\n` +
+                `/ativar\\_twitter\n` +
+                `→ Liga o Twitter\n\n` +
 
-                `/ativar\\_reddit ou /desativar\\_reddit\n` +
-                `→ Liga/desliga Reddit\n\n` +
+                `/desativar\\_twitter\n` +
+                `→ Desliga o Twitter\n\n` +
 
-                `_ID: ${chatId}_`
+                `/ativar\\_reddit\n` +
+                `→ Liga o Reddit\n\n` +
+
+                `/desativar\\_reddit\n` +
+                `→ Desliga o Reddit\n\n` +
+
+                `_Seu ID: ${chatId}_`
             );
             return;
         }
