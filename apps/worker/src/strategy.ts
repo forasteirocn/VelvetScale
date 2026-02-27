@@ -670,6 +670,20 @@ Which ONE sub is the best match?`,
             .update({ last_posted_at: new Date().toISOString() })
             .eq('model_id', modelId)
             .eq('name', currentSub);
+
+        // Save to posts table so checkRemovedPosts can track this post
+        // and learn from removals (Phase 3)
+        await supabase.from('posts').insert({
+            model_id: modelId,
+            platform: 'reddit',
+            subreddit: currentSub,
+            title: currentTitle,
+            content: currentTitle,
+            photo_url: photoUrl,
+            external_url: result.url || null,
+            status: 'published',
+            published_at: new Date().toISOString(),
+        });
     } else {
         const safeError = (result.error || 'Erro desconhecido').replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ').substring(0, 200);
         const triedList = triedSubs.map(s => `r/${s}`).join(', ');
