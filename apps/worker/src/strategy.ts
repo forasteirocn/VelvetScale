@@ -250,6 +250,7 @@ export async function analyzeAndSchedule(
                     photo_url: photo.url,
                     original_caption: photo.caption,
                     improved_title: title,
+                    title_style: titleStyle,
                     target_subreddit: plan.subreddit,
                     scheduled_for: plan.scheduledFor.toISOString(),
                     status: 'ready',
@@ -665,6 +666,11 @@ Which ONE sub is the best match?`,
         const successSafeSub = currentSub.replace(/_/g, '\\_');
         await sendTelegramMessage(chatId, `Postado em r/${successSafeSub}!\n\n${result.url || ''}`);
 
+        // Schedule auto-comment to boost visibility
+        if (result.url) {
+            const { scheduleAutoComment } = await import('./auto-comment');
+            scheduleAutoComment(modelId, result.url, currentTitle, model.persona || '');
+        }
         await supabase
             .from('subreddits')
             .update({ last_posted_at: new Date().toISOString() })
@@ -678,6 +684,7 @@ Which ONE sub is the best match?`,
             platform: 'reddit',
             subreddit: currentSub,
             title: currentTitle,
+            title_style: 'default',
             content: currentTitle,
             photo_url: photoUrl,
             external_url: result.url || null,

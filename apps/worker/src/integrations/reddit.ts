@@ -31,7 +31,7 @@ async function getBrowser(): Promise<Browser> {
     return browser;
 }
 
-async function getModelContext(modelId: string): Promise<BrowserContext> {
+export async function getModelContext(modelId: string): Promise<BrowserContext> {
     const br = await getBrowser();
     const cookiePath = path.join(COOKIES_DIR, `${modelId}.json`);
 

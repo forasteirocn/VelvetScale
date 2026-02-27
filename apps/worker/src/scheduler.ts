@@ -1,7 +1,9 @@
 import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
 import { submitRedditImagePost } from './integrations/reddit';
-import { improveCaption } from './integrations/claude';
+import { improveCaption, type SubRulesContext } from './integrations/claude';
+import { getSubRules } from './anti-ban';
+import axios from 'axios';
 
 // =============================================
 // VelvetScale Scheduler
@@ -123,12 +125,37 @@ export async function schedulePhotos(
         // Improve caption with Claude
         let improvedTitle = photo.caption;
         try {
+            // Build sub rules context
+            let subRulesCtx: SubRulesContext | null = null;
+            try {
+                const rules = await getSubRules(targetSub);
+                if (rules) {
+                    subRulesCtx = {
+                        titleRules: rules.titleRules || [],
+                        bannedWords: rules.bannedWords || [],
+                        otherRules: rules.otherRules || [],
+                    };
+                    try {
+                        const resp = await axios.get(`https://www.reddit.com/r/${targetSub}/hot.json?limit=5`, {
+                            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                            timeout: 10000,
+                        });
+                        subRulesCtx.topTitles = (resp.data?.data?.children || [])
+                            .filter((p: any) => p.data?.score > 10)
+                            .map((p: any) => p.data.title as string)
+                            .slice(0, 5);
+                    } catch { /* ignore */ }
+                }
+            } catch { /* ignore */ }
+
             const improved = await improveCaption(
                 photo.caption || '🔥',
                 targetSub,
                 model.bio || '',
                 model.persona || '',
-                { onlyfans: model.onlyfans_url, privacy: model.privacy_url }
+                { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                undefined,
+                subRulesCtx
             );
             improvedTitle = improved.title;
         } catch (err) {
@@ -275,10 +302,13 @@ async function processScheduledPosts(): Promise<void> {
                     .eq('name', post.target_subreddit);
 
                 // Save to posts table
+                const scheduledStyle = (post as any).title_style || 'default';
                 await supabase.from('posts').insert({
                     model_id: post.model_id,
                     platform: 'reddit',
                     post_type: 'post',
+                    title: post.improved_title,
+                    title_style: scheduledStyle,
                     content: post.improved_title,
                     media_urls: [post.photo_url],
                     external_url: result.url,
@@ -297,6 +327,13 @@ async function processScheduledPosts(): Promise<void> {
                 }
 
                 console.log(`✅ Publicado em r/${post.target_subreddit}`);
+
+                // Schedule auto-comment to boost visibility
+                if (result.url) {
+                    const { scheduleAutoComment } = await import('./auto-comment');
+                    const persona = (post as any).models?.persona || '';
+                    scheduleAutoComment(post.model_id, result.url, post.improved_title || '', persona);
+                }
 
                 // Log
                 await supabase.from('agent_logs').insert({

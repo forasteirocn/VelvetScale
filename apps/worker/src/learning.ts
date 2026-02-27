@@ -157,7 +157,7 @@ async function recalculateSubPerformance(modelId: string): Promise<void> {
     // Get all published posts grouped by subreddit
     const { data: posts } = await supabase
         .from('posts')
-        .select('subreddit, upvotes, comments_count, published_at, status')
+        .select('subreddit, upvotes, comments_count, published_at, status, title_style')
         .eq('model_id', modelId)
         .eq('platform', 'reddit')
         .in('status', ['published', 'deleted']);
@@ -171,12 +171,13 @@ async function recalculateSubPerformance(modelId: string): Promise<void> {
         comments: number[];
         removed: number;
         hours: number[];
+        styleUpvotes: Record<string, { total: number; upvotes: number }>;
     }> = {};
 
     for (const post of posts) {
         if (!post.subreddit) continue;
         if (!subStats[post.subreddit]) {
-            subStats[post.subreddit] = { total: 0, upvotes: [], comments: [], removed: 0, hours: [] };
+            subStats[post.subreddit] = { total: 0, upvotes: [], comments: [], removed: 0, hours: [], styleUpvotes: {} };
         }
 
         const stats = subStats[post.subreddit];
@@ -190,6 +191,13 @@ async function recalculateSubPerformance(modelId: string): Promise<void> {
             if (post.published_at) {
                 stats.hours.push(new Date(post.published_at).getUTCHours());
             }
+            // Track upvotes per title style
+            const style = (post as any).title_style || 'default';
+            if (!stats.styleUpvotes[style]) {
+                stats.styleUpvotes[style] = { total: 0, upvotes: 0 };
+            }
+            stats.styleUpvotes[style].total++;
+            stats.styleUpvotes[style].upvotes += (post.upvotes || 0);
         }
     }
 
@@ -222,6 +230,19 @@ async function recalculateSubPerformance(modelId: string): Promise<void> {
             }
         }
 
+        // Find best title style
+        let bestStyle: string | null = null;
+        let bestStyleAvg = 0;
+        for (const [style, data] of Object.entries(stats.styleUpvotes)) {
+            if (data.total >= 2) {
+                const avg = data.upvotes / data.total;
+                if (avg > bestStyleAvg) {
+                    bestStyleAvg = avg;
+                    bestStyle = style;
+                }
+            }
+        }
+
         await supabase
             .from('sub_performance')
             .upsert({
@@ -233,6 +254,7 @@ async function recalculateSubPerformance(modelId: string): Promise<void> {
                 avg_upvotes: Math.round(avgUpvotes * 10) / 10,
                 posts_removed: stats.removed,
                 best_posting_hour: bestHour,
+                best_title_style: bestStyle,
                 last_calculated_at: new Date().toISOString(),
             }, { onConflict: 'model_id,subreddit' });
     }
@@ -248,6 +270,7 @@ export interface LearningSummary {
     topSubs: Array<{ name: string; avgUpvotes: number; totalPosts: number }>;
     worstSubs: Array<{ name: string; avgUpvotes: number; removalRate: number }>;
     bestHours: number[];
+    bestStylePerSub: Record<string, string>; // sub -> best title style
     titlePatterns: { highPerformers: string[]; lowPerformers: string[] };
     overallStats: { totalPosts: number; avgUpvotes: number; avgComments: number };
     generatedAt: string;
@@ -306,6 +329,14 @@ export async function generateLearningSummary(modelId: string): Promise<Learning
         .map(p => p.best_posting_hour as number);
     const bestHours = [...new Set(hours)].slice(0, 5);
 
+    // Best title style per sub
+    const bestStylePerSub: Record<string, string> = {};
+    for (const p of perfData) {
+        if ((p as any).best_title_style) {
+            bestStylePerSub[p.subreddit] = (p as any).best_title_style;
+        }
+    }
+
     // Title pattern analysis
     const sortedPosts = [...(recentPosts || [])].sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0));
     const highPerformers = sortedPosts.slice(0, 5).map(p => p.content?.substring(0, 80) || '');
@@ -320,6 +351,7 @@ export async function generateLearningSummary(modelId: string): Promise<Learning
         topSubs,
         worstSubs,
         bestHours,
+        bestStylePerSub,
         titlePatterns: { highPerformers, lowPerformers },
         overallStats: {
             totalPosts,
