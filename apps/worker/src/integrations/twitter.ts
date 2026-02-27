@@ -146,6 +146,9 @@ export async function postTweet(
         // Upload media if provided
         if (photoUrl) {
             mediaId = await uploadMedia(client, photoUrl);
+            if (!mediaId) {
+                console.log('  ⚠️ Media upload failed, posting text-only tweet instead');
+            }
         }
 
         // Post the tweet
@@ -154,6 +157,7 @@ export async function postTweet(
             tweetData.media = { media_ids: [mediaId] };
         }
 
+        console.log(`  🔄 Posting tweet via v2 API...`);
         const result: TweetV2PostTweetResult = await client.v2.tweet(tweetData);
 
         const tweetId = result.data.id;
