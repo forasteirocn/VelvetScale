@@ -131,6 +131,9 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 `/fila\n` +
                 `→ Mostra posts na fila de espera\n\n` +
 
+                `/cancelar\n` +
+                `→ Cancela TODOS os posts pendentes\n\n` +
+
                 `📅 Foto + /piloto na legenda\n` +
                 `→ Modo piloto: envie várias fotos e IA cria calendário semanal\n\n` +
 
@@ -267,6 +270,48 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
             const telegramId = update.message.from.id.toString();
             console.log(`📋 /fila de chat ${chatId}`);
             await handleFilaCommand(chatId, telegramId);
+            return;
+        }
+
+        // === Handle /cancelar command ===
+        if (update.message?.text === '/cancelar') {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            console.log(`🚫 /cancelar de chat ${chatId}`);
+
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (!model) {
+                await sendTelegramMessage(chatId, '❌ Modelo não encontrado.');
+                return;
+            }
+
+            // Cancel all pending posts (queued, scheduled, pending)
+            const { data: cancelled, error } = await supabase
+                .from('posts')
+                .update({ status: 'cancelled' })
+                .eq('model_id', model.id)
+                .in('status', ['queued', 'scheduled', 'pending'])
+                .select('id, title, subreddit, platform');
+
+            if (error) {
+                await sendTelegramMessage(chatId, `❌ Erro ao cancelar: ${error.message}`);
+                return;
+            }
+
+            if (!cancelled?.length) {
+                await sendTelegramMessage(chatId, '✅ Nenhum post pendente para cancelar.');
+            } else {
+                const list = cancelled.map(p =>
+                    `• ${p.platform || 'reddit'} ${p.subreddit ? `r/${p.subreddit}` : ''} — "${(p.title || '').substring(0, 40)}..."`
+                ).join('\n');
+                await sendTelegramMessage(chatId, `🚫 *${cancelled.length} post(s) cancelado(s):*\n\n${list}`);
+            }
             return;
         }
 
