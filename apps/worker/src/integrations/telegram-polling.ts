@@ -149,7 +149,10 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 `→ Total de posts e comandos\n\n` +
 
                 `Ver engajamento\n` +
-                `→ Upvotes e comentários recentes`
+                `→ Upvotes e comentários recentes\n\n` +
+
+                `/verificar\n` +
+                `→ Guia de verificação dos subs (karma, passos)`
             );
 
             // Message 3: Twitter + Platform commands
@@ -453,6 +456,29 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
                 const result = await customCollabReply(model.id, collabIdPrefix, text);
                 await sendTelegramMessage(chatId, result);
             }
+            return;
+        }
+
+        // === Handle /verificar command ===
+        if (update.message?.text === '/verificar') {
+            const chatId = update.message.chat.id;
+            const telegramId = update.message.from.id.toString();
+            console.log(`🔍 /verificar de chat ${chatId}`);
+
+            const supabase = getSupabaseAdmin();
+            const { data: model } = await supabase
+                .from('models')
+                .select('id')
+                .or(`phone.eq.${telegramId},phone.eq.${chatId}`)
+                .single();
+
+            if (!model) {
+                await sendTelegramMessage(chatId, '⚠️ Conta não encontrada.');
+                return;
+            }
+
+            const { triggerVerificationGuide } = await import('../verification-guide');
+            await triggerVerificationGuide(model.id, chatId);
             return;
         }
 

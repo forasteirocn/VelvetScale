@@ -18,6 +18,7 @@ import { startTwitterEngagement, stopTwitterEngagement } from './twitter-engagem
 import { startTwitterPresence, stopTwitterPresence } from './twitter-presence';
 import { startTwitterLearning, stopTwitterLearning } from './twitter-learning';
 import { startTrendRider, stopTrendRider } from './twitter-trends';
+import { startVerificationGuide, stopVerificationGuide } from './verification-guide';
 import { getSupabaseAdmin } from '@velvetscale/db';
 
 const app = express();
@@ -59,6 +60,7 @@ async function main() {
         startTwitterPresence();    // Twitter presence posts (6h)
         startTwitterLearning();    // Twitter metrics tracking (24h)
         startTrendRider();         // Twitter trend rider (8h)
+        startVerificationGuide();  // Reddit verification guide (24h)
 
         // === Twitter Diagnostic ===
         try {
@@ -118,6 +120,7 @@ process.on('SIGINT', async () => {
     stopTwitterPresence();
     stopTwitterLearning();
     stopTrendRider();
+    stopVerificationGuide();
     await closeBrowser();
     process.exit(0);
 });
@@ -136,6 +139,7 @@ process.on('SIGTERM', async () => {
     stopTwitterPresence();
     stopTwitterLearning();
     stopTrendRider();
+    stopVerificationGuide();
     await closeBrowser();
     process.exit(0);
 });
