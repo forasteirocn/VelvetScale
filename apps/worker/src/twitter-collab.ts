@@ -42,11 +42,11 @@ function scheduleAt1850BRT(): void {
     const localOffset = now.getTimezoneOffset(); // minutes from UTC
     const brtNow = new Date(now.getTime() + (localOffset + brtOffset) * 60 * 1000);
 
-    // Target: 19:15 BRT today
+    // Target: 09:55 BRT today
     const target = new Date(brtNow);
-    target.setHours(19, 15, 0, 0);
+    target.setHours(9, 55, 0, 0);
 
-    // If 19:15 already passed today, schedule for tomorrow
+    // If 09:55 already passed today, schedule for tomorrow
     if (brtNow >= target) {
         target.setDate(target.getDate() + 1);
     }
@@ -56,7 +56,7 @@ function scheduleAt1850BRT(): void {
 
     const hours = Math.floor(msUntilTarget / (60 * 60 * 1000));
     const mins = Math.floor((msUntilTarget % (60 * 60 * 1000)) / (60 * 1000));
-    console.log(`  ⏰ Próxima busca de collabs em ${hours}h${mins}min (19:15 BRT)`);
+    console.log(`  ⏰ Próxima busca de collabs em ${hours}h${mins}min (09:55 BRT)`);
 
     collabInterval = setTimeout(async () => {
         await prospectCollabs();
