@@ -670,36 +670,67 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         .eq('is_approved', true)
         .eq('needs_verification', true);
 
-    // 7. Generate guides (max 6 subs for speed)
+    // 7. Generate guides (max 6 subs for speed, with progress)
     const subsToGuide = (verifSubs || []).slice(0, 6);
     await sendTelegramMessage(chatId, `📋 Gerando guias para ${subsToGuide.length} sub(s)...`);
 
     const guides: VerificationGuide[] = [];
-    for (const sub of subsToGuide) {
-        const guide = await generateVerificationGuide(sub.name, accountInfo);
-        guides.push(guide);
+    for (let i = 0; i < subsToGuide.length; i++) {
+        const sub = subsToGuide[i];
+        try {
+            console.log(`  📋 [${i + 1}/${subsToGuide.length}] Analisando r/${sub.name}...`);
+            const guide = await generateVerificationGuide(sub.name, accountInfo);
+            guides.push(guide);
+        } catch (err) {
+            console.error(`  ⚠️ Guide error for r/${sub.name}:`, err instanceof Error ? err.message : err);
+            // Add fallback guide so we still show something
+            guides.push({
+                subName: sub.name,
+                members: sub.member_count || 0,
+                steps: ['Mande modmail para os moderadores', 'Inclua foto de verificação com username + nome do sub + data'],
+                karmaRequired: null,
+                accountAgeRequired: null,
+                verificationLink: null,
+                difficulty: 'médio',
+                isEligible: true,
+                eligibilityReason: 'Erro ao analisar — verifique manualmente',
+            });
+        }
         await new Promise(r => setTimeout(r, 800));
     }
 
     // 8. Activate karma force for ineligible subs
-    const ineligible = guides.filter(g => !g.isEligible);
-    await activateKarmaForce(modelId, ineligible);
+    try {
+        const ineligible = guides.filter(g => !g.isEligible);
+        await activateKarmaForce(modelId, ineligible);
+    } catch (err) {
+        console.error('  ⚠️ Karma force error:', err);
+    }
 
-    // 9. Send beautiful report
-    await sendReport(String(chatId), accountInfo, guides, discovered);
+    // 9. Send report (wrapped in try/catch to never lose progress)
+    try {
+        await sendReport(String(chatId), accountInfo, guides, discovered);
+    } catch (err) {
+        console.error('  ⚠️ Report send error:', err instanceof Error ? err.message : err);
+        // Fallback: send a simple summary
+        const safeSubs = guides.map(g => `- r/${g.subName.replace(/_/g, '\\_')} (${g.isEligible ? '✅' : '❌'})`).join('\n');
+        await sendTelegramMessage(chatId, `📋 *Guias gerados:*\n\n${safeSubs}\n\n_Erro ao formatar relatório completo. Use /verificar novamente._`);
+    }
 
     // 10. Log
-    await supabase.from('agent_logs').insert({
-        model_id: modelId,
-        action: 'verification_guide_sent',
-        details: {
-            subsScanned: guides.length,
-            eligible: guides.filter(g => g.isEligible).length,
-            karmaForce: ineligible.length,
-            discovered: discovered.length,
-            newSubs: newlyDiscovered.length,
-        },
-    });
+    try {
+        await supabase.from('agent_logs').insert({
+            model_id: modelId,
+            action: 'verification_guide_sent',
+            details: {
+                subsScanned: guides.length,
+                eligible: guides.filter(g => g.isEligible).length,
+                karmaForce: guides.filter(g => !g.isEligible).length,
+                discovered: discovered.length,
+                newSubs: newlyDiscovered.length,
+            },
+        });
+    } catch { /* ignore log errors */ }
 
-    console.log(`  ✅ Verification guide sent: ${guides.length} guides, ${discovered.length} discovered, ${ineligible.length} karma force`);
+    console.log(`  ✅ Verification guide sent: ${guides.length} guides, ${discovered.length} discovered`);
 }
