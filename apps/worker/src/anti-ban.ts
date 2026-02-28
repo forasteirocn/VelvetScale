@@ -225,14 +225,22 @@ export async function validatePostBeforeSubmit(
         result.blockers.push(`r/${subredditName} does NOT allow NSFW content`);
     }
 
-    // Check if verification is required
+    // Check if verification is required — this is a BLOCKER
     if (rules.requiresVerification) {
-        result.warnings.push(`r/${subredditName} requires verification — post may be removed`);
+        result.isOk = false;
+        result.blockers.push(`r/${subredditName} exige VERIFICAÇÃO prévia (foto com nome do sub) — post bloqueado`);
 
-        // Save flag so karma builder can prioritize this sub
+        // Mark sub in DB so it's excluded from all future posting
         if (modelId) {
             try {
                 const supa = getSupabaseAdmin();
+                await supa
+                    .from('subreddits')
+                    .update({ needs_verification: true })
+                    .eq('model_id', modelId)
+                    .eq('name', subredditName);
+
+                // Also save in posting_rules for cross-reference
                 const { data: existing } = await supa
                     .from('subreddits')
                     .select('posting_rules')
@@ -252,6 +260,8 @@ export async function validatePostBeforeSubmit(
                     })
                     .eq('model_id', modelId)
                     .eq('name', subredditName);
+
+                console.log(`  🔒 r/${subredditName} marcado como needs_verification=true`);
             } catch { /* ignore */ }
         }
     }

@@ -2,7 +2,7 @@ import { getSupabaseAdmin } from '@velvetscale/db';
 import { sendTelegramMessage } from './integrations/telegram';
 import { submitRedditImagePost } from './integrations/reddit';
 import { improveCaption, type SubRulesContext } from './integrations/claude';
-import { getSubRules } from './anti-ban';
+import { getSubRules, validatePostBeforeSubmit } from './anti-ban';
 import axios from 'axios';
 
 // =============================================
@@ -86,6 +86,7 @@ export async function schedulePhotos(
         .select('*')
         .eq('model_id', modelId)
         .eq('is_approved', true)
+        .or('needs_verification.is.null,needs_verification.eq.false')
         .order('last_posted_at', { ascending: true, nullsFirst: true });
 
     if (!subs?.length) {
@@ -274,6 +275,31 @@ async function processScheduledPosts(): Promise<void> {
                 .eq('id', post.id);
 
             console.log(`📤 Postando em r/${post.target_subreddit}: "${post.improved_title}"`);
+
+            // Validate before posting (catches subs flagged after scheduling)
+            const validation = await validatePostBeforeSubmit(
+                post.target_subreddit,
+                post.improved_title || post.original_caption || '🔥',
+                true,
+                post.model_id
+            );
+
+            if (!validation.isOk) {
+                console.log(`  🚫 Scheduled post blocked for r/${post.target_subreddit}: ${validation.blockers.join(', ')}`);
+                await supabase
+                    .from('scheduled_posts')
+                    .update({ status: 'failed', error: validation.blockers.join(', ') })
+                    .eq('id', post.id);
+
+                const chatId = (post as any).models?.phone;
+                if (chatId) {
+                    const safeSub = post.target_subreddit.replace(/_/g, '\\_');
+                    await sendTelegramMessage(chatId,
+                        `🚫 Post agendado em r/${safeSub} *bloqueado*: ${validation.blockers[0]}`
+                    );
+                }
+                continue;
+            }
 
             // Post via Playwright
             const result = await submitRedditImagePost(

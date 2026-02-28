@@ -110,10 +110,11 @@ export async function analyzeAndSchedule(
     // 2. Get all approved subs (not banned)
     const { data: subs } = await supabase
         .from('subreddits')
-        .select('name, last_posted_at, cooldown_hours, engagement_score, is_banned, member_count')
+        .select('name, last_posted_at, cooldown_hours, engagement_score, is_banned, member_count, needs_verification')
         .eq('model_id', modelId)
         .eq('is_approved', true)
-        .eq('is_banned', false);
+        .eq('is_banned', false)
+        .or('needs_verification.is.null,needs_verification.eq.false');
 
     if (!subs?.length) {
         await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado. Use "encontrar subreddits" primeiro.');
@@ -465,10 +466,11 @@ export async function intelligentImmediatePost(
 
     const { data: subs } = await supabase
         .from('subreddits')
-        .select('name, engagement_score, last_posted_at, is_banned')
+        .select('name, engagement_score, last_posted_at, is_banned, needs_verification')
         .eq('model_id', modelId)
         .eq('is_approved', true)
-        .eq('is_banned', false);
+        .eq('is_banned', false)
+        .or('needs_verification.is.null,needs_verification.eq.false');
 
     if (!subs?.length) {
         await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit configurado.');
