@@ -20,12 +20,11 @@ let presenceInterval: ReturnType<typeof setInterval> | null = null;
 export function startTwitterPresence(): void {
     if (presenceInterval) return;
 
-    console.log('✨ Twitter Presence Engine iniciado (6h intervals)');
+    console.log('✨ Twitter Presence Engine iniciado (6h intervals, executa imediatamente)');
 
-    setTimeout(() => {
-        postPresenceContent();
-        presenceInterval = setInterval(postPresenceContent, 6 * 60 * 60 * 1000); // 6h
-    }, 30 * 60 * 1000); // First run after 30 min
+    // Execute immediately, then every 6h
+    postPresenceContent();
+    presenceInterval = setInterval(postPresenceContent, 6 * 60 * 60 * 1000);
 }
 
 export function stopTwitterPresence(): void {
@@ -54,7 +53,12 @@ async function postPresenceContent(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('✨ Twitter Presence: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`✨ Twitter Presence: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;

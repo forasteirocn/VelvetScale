@@ -19,12 +19,11 @@ let learningInterval: ReturnType<typeof setInterval> | null = null;
 export function startTwitterLearning(): void {
     if (learningInterval) return;
 
-    console.log('📈 Twitter Learning Engine iniciado (diário)');
+    console.log('📈 Twitter Learning Engine iniciado (diário, executa imediatamente)');
 
-    setTimeout(() => {
-        updateTwitterMetrics();
-        learningInterval = setInterval(updateTwitterMetrics, 24 * 60 * 60 * 1000); // Daily
-    }, 45 * 60 * 1000); // First run after 45 min
+    // Execute immediately, then every 24h
+    updateTwitterMetrics();
+    learningInterval = setInterval(updateTwitterMetrics, 24 * 60 * 60 * 1000);
 }
 
 export function stopTwitterLearning(): void {
@@ -43,7 +42,12 @@ async function updateTwitterMetrics(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('📈 Twitter Learning: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`📈 Twitter Learning: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;

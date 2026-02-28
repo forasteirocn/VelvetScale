@@ -21,12 +21,11 @@ let trendInterval: ReturnType<typeof setInterval> | null = null;
 export function startTrendRider(): void {
     if (trendInterval) return;
 
-    console.log('🔥 Twitter Trend Rider iniciado (8h intervals)');
+    console.log('🔥 Twitter Trend Rider iniciado (8h intervals, executa imediatamente)');
 
-    setTimeout(() => {
-        rideTrends();
-        trendInterval = setInterval(rideTrends, 8 * 60 * 60 * 1000); // 8h
-    }, 60 * 60 * 1000); // First run after 1h
+    // Execute immediately, then every 8h
+    rideTrends();
+    trendInterval = setInterval(rideTrends, 8 * 60 * 60 * 1000);
 }
 
 export function stopTrendRider(): void {
@@ -45,7 +44,12 @@ async function rideTrends(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('🔥 Twitter Trends: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`🔥 Twitter Trends: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;

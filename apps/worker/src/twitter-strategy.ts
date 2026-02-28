@@ -20,13 +20,11 @@ let twitterInterval: ReturnType<typeof setInterval> | null = null;
 export function startTwitterEngine(): void {
     if (twitterInterval) return;
 
-    console.log('🐦 Twitter Content Engine iniciado (4h intervals)');
+    console.log('🐦 Twitter Content Engine iniciado (4h intervals, executa imediatamente)');
 
-    // First run after 10 minutes
-    setTimeout(() => {
-        processTwitterPosts();
-        twitterInterval = setInterval(processTwitterPosts, 4 * 60 * 60 * 1000); // 4h
-    }, 10 * 60 * 1000);
+    // Execute immediately, then every 4h
+    processTwitterPosts();
+    twitterInterval = setInterval(processTwitterPosts, 4 * 60 * 60 * 1000);
 }
 
 export function stopTwitterEngine(): void {
@@ -50,7 +48,12 @@ async function processTwitterPosts(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('🐦 Twitter Strategy: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`🐦 Twitter Strategy: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;

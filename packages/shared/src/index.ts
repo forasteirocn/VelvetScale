@@ -185,9 +185,18 @@ export interface WhatsAppWebhookPayload {
  * Default: reddit=true, twitter=false (for new models).
  */
 export function isPlatformEnabled(
-    model: { enabled_platforms?: any },
+    model: { enabled_platforms?: any; id?: string },
     platform: 'reddit' | 'twitter'
 ): boolean {
-    if (!model.enabled_platforms) return platform === 'reddit';
-    return model.enabled_platforms[platform] === true;
+    if (!model.enabled_platforms) {
+        if (platform === 'twitter') {
+            console.log(`  ⚠️ ${platform} DESABILITADO para modelo ${model.id?.substring(0, 8) || '?'} (enabled_platforms é null — rode: UPDATE models SET enabled_platforms = '{"reddit":true,"twitter":true}'::jsonb WHERE id = '...')`);
+        }
+        return platform === 'reddit';
+    }
+    const enabled = model.enabled_platforms[platform] === true;
+    if (!enabled && platform === 'twitter') {
+        console.log(`  ⚠️ ${platform} DESABILITADO para modelo ${model.id?.substring(0, 8) || '?'} (enabled_platforms.twitter = false)`);
+    }
+    return enabled;
 }

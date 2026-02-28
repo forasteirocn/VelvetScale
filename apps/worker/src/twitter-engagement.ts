@@ -20,12 +20,11 @@ let engagementInterval: ReturnType<typeof setInterval> | null = null;
 export function startTwitterEngagement(): void {
     if (engagementInterval) return;
 
-    console.log('💬 Twitter Engagement Engine iniciado (2h intervals)');
+    console.log('💬 Twitter Engagement Engine iniciado (2h intervals, executa imediatamente)');
 
-    setTimeout(() => {
-        processEngagement();
-        engagementInterval = setInterval(processEngagement, 2 * 60 * 60 * 1000); // 2h
-    }, 15 * 60 * 1000); // First run after 15 min
+    // Execute immediately, then every 2h
+    processEngagement();
+    engagementInterval = setInterval(processEngagement, 2 * 60 * 60 * 1000);
 }
 
 export function stopTwitterEngagement(): void {
@@ -44,7 +43,12 @@ async function processEngagement(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('💬 Twitter Engagement: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`💬 Twitter Engagement: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;

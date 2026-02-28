@@ -18,6 +18,7 @@ import { startTwitterEngagement, stopTwitterEngagement } from './twitter-engagem
 import { startTwitterPresence, stopTwitterPresence } from './twitter-presence';
 import { startTwitterLearning, stopTwitterLearning } from './twitter-learning';
 import { startTrendRider, stopTrendRider } from './twitter-trends';
+import { getSupabaseAdmin } from '@velvetscale/db';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -58,6 +59,37 @@ async function main() {
         startTwitterPresence();    // Twitter presence posts (6h)
         startTwitterLearning();    // Twitter metrics tracking (24h)
         startTrendRider();         // Twitter trend rider (8h)
+
+        // === Twitter Diagnostic ===
+        try {
+            const supabase = getSupabaseAdmin();
+            const { data: allModels } = await supabase
+                .from('models')
+                .select('id, status, twitter_access_token, enabled_platforms')
+                .eq('status', 'active');
+
+            const total = allModels?.length || 0;
+            const withToken = allModels?.filter(m => m.twitter_access_token).length || 0;
+            const withTwitterEnabled = allModels?.filter(m => m.enabled_platforms?.twitter === true).length || 0;
+            const eligible = allModels?.filter(m => m.twitter_access_token && m.enabled_platforms?.twitter === true).length || 0;
+
+            console.log(`\n📊 === DIAGNÓSTICO TWITTER ===`);
+            console.log(`   Modelos ativos: ${total}`);
+            console.log(`   Com twitter_access_token: ${withToken}`);
+            console.log(`   Com enabled_platforms.twitter=true: ${withTwitterEnabled}`);
+            console.log(`   ✅ Elegíveis (token + habilitado): ${eligible}`);
+
+            if (eligible === 0 && withToken > 0) {
+                console.log(`\n   🔴 PROBLEMA: ${withToken} modelo(s) têm token mas twitter DESABILITADO!`);
+                console.log(`   🔧 FIX: Execute no Supabase SQL Editor:`);
+                console.log(`   UPDATE models SET enabled_platforms = '{"reddit":true,"twitter":true}'::jsonb WHERE status = 'active' AND twitter_access_token IS NOT NULL;`);
+            } else if (eligible === 0) {
+                console.log(`\n   🔴 PROBLEMA: Nenhum modelo tem twitter_access_token no banco!`);
+            }
+            console.log(`==============================\n`);
+        } catch (err) {
+            console.error('⚠️ Twitter diagnostic failed:', err);
+        }
 
         app.listen(PORT, () => {
             console.log(`🚀 VelvetScale Worker running on port ${PORT}`);

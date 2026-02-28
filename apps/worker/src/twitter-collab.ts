@@ -21,16 +21,14 @@ let dmCheckInterval: ReturnType<typeof setInterval> | null = null;
 export function startCollabHunter(): void {
     if (collabInterval) return;
 
-    console.log('🤝 Collab Hunter iniciado (diário 19:00 BRT, checa DMs 2h)');
+    console.log('🤝 Collab Hunter iniciado (diário 19:15 BRT, checa DMs 2h, executa imediatamente)');
 
-    // Schedule prospecting daily at 18:50 BRT
+    // Schedule prospecting daily at 19:15 BRT
     scheduleAt1850BRT();
 
-    // Check DM responses every 2h (first run after 15min)
-    setTimeout(() => {
-        checkDMResponses();
-        dmCheckInterval = setInterval(checkDMResponses, 2 * 60 * 60 * 1000); // 2h
-    }, 15 * 60 * 1000);
+    // Check DM responses immediately, then every 2h
+    checkDMResponses();
+    dmCheckInterval = setInterval(checkDMResponses, 2 * 60 * 60 * 1000);
 }
 
 /**
@@ -91,7 +89,12 @@ async function prospectCollabs(): Promise<void> {
         .eq('status', 'active')
         .not('twitter_access_token', 'is', null);
 
-    if (!models?.length) return;
+    if (!models?.length) {
+        console.log('🤝 Collab Hunter: Nenhum modelo ativo com twitter_access_token encontrado no banco');
+        return;
+    }
+
+    console.log(`🤝 Collab Hunter: ${models.length} modelo(s) encontrado(s), verificando elegibilidade...`);
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'twitter')) continue;
