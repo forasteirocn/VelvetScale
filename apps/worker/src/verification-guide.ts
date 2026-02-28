@@ -423,6 +423,9 @@ async function scanForModel(
     }
 
     if (guides.length > 0) {
+        // Save guides to DB (persist before sending)
+        await saveGuidesToDB(model.id, guides);
+
         // Activate karma priority for ineligible subs
         await activateKarmaForce(model.id, guides.filter(g => !g.isEligible));
 
@@ -487,37 +490,48 @@ async function sendReport(
     guides: VerificationGuide[],
     discovered: DiscoveredSub[]
 ): Promise<void> {
+    const cid = Number(chatId);
+
     // === MESSAGE 1: Account Stats ===
-    let header = '🔐 *VERIFICAÇÃO*\n\n';
+    let header = '🔐 VERIFICAÇÃO\n\n';
     if (accountInfo) {
-        header += `👤 u/${escTg(accountInfo.username)}\n`;
+        header += `👤 u/${accountInfo.username}\n`;
         header += `⭐ ${accountInfo.totalKarma.toLocaleString('pt-BR')} karma total\n`;
-        header += `📝 ${accountInfo.postKarma.toLocaleString('pt-BR')} post | `;
-        header += `💬 ${accountInfo.commentKarma.toLocaleString('pt-BR')} comment\n`;
+        header += `📝 ${accountInfo.postKarma.toLocaleString('pt-BR')} post | 💬 ${accountInfo.commentKarma.toLocaleString('pt-BR')} comment\n`;
         header += `📅 Conta: ${accountInfo.accountAge}\n`;
         header += `📧 Email: ${accountInfo.isVerifiedEmail ? 'Verificado ✅' : 'Não verificado ❌'}\n`;
     }
-    await sendTelegramMessage(Number(chatId), header);
+    await sendTelegramMessage(cid, header);
 
-    // Separate by eligibility
     const ready = guides.filter(g => g.isEligible);
     const needsKarma = guides.filter(g => !g.isEligible);
 
-    // === MESSAGE 2: Ready to verify ===
+    // === MESSAGES: Ready to verify (one per sub to avoid message limit) ===
     if (ready.length > 0) {
-        let msg = `━━━ 🟢 *PRONTOS PARA VERIFICAR* (${ready.length}) ━━━\n\n`;
+        await sendTelegramMessage(cid, `━━━ 🟢 PRONTOS PARA VERIFICAR (${ready.length}) ━━━`);
+
         for (const g of ready) {
-            msg += formatGuideMsg(g);
+            const diffIcon = g.difficulty === 'fácil' ? '🟢' : g.difficulty === 'médio' ? '🟡' : '🔴';
+            let msg = `✅ r/${g.subName} (${formatMembers(g.members)}) ${diffIcon} ${g.difficulty}\n\n`;
+
+            for (let i = 0; i < g.steps.length; i++) {
+                msg += `${i + 1}. ${g.steps[i]}\n`;
+            }
+
+            if (g.verificationLink) {
+                msg += `\n🔗 ${g.verificationLink}`;
+            }
+
+            await sendTelegramMessage(cid, msg);
+            await new Promise(r => setTimeout(r, 300));
         }
-        await sendTelegramMessage(Number(chatId), msg);
     }
 
-    // === MESSAGE 3: Need karma ===
+    // === MESSAGE: Need karma ===
     if (needsKarma.length > 0) {
-        let msg = `━━━ 🔴 *PRECISAM DE KARMA* (${needsKarma.length}) ━━━\n\n`;
+        let msg = `━━━ 🔴 PRECISAM DE KARMA (${needsKarma.length}) ━━━\n\n`;
         for (const g of needsKarma) {
-            const safeName = g.subName.replace(/_/g, '\\_');
-            msg += `❌ *r/${safeName}* (${formatMembers(g.members)})\n`;
+            msg += `❌ r/${g.subName} (${formatMembers(g.members)})\n`;
 
             if (g.karmaRequired && accountInfo) {
                 const missing = g.karmaRequired - accountInfo.totalKarma;
@@ -528,58 +542,80 @@ async function sendReport(
             if (g.accountAgeRequired) {
                 msg += `   📅 Idade mínima: ${g.accountAgeRequired}\n`;
             }
-            msg += `   🤖 *Karma Builder ativado nesse sub*\n\n`;
+            msg += `   🤖 Karma Builder ativado nesse sub\n\n`;
         }
-        await sendTelegramMessage(Number(chatId), msg);
+        await sendTelegramMessage(cid, msg);
     }
 
-    // === MESSAGE 4: Discovered subs ===
+    // === MESSAGE: Discovered subs ===
     if (discovered.length > 0) {
         const newSubs = discovered.filter(d => !d.isAlreadyAdded);
-        const existingSubs = discovered.filter(d => d.isAlreadyAdded);
 
         if (newSubs.length > 0) {
-            let msg = `━━━ 🆕 *NOVOS SUBS DESCOBERTOS* (${newSubs.length}) ━━━\n`;
-            msg += `(30k\\+ membros, NSFW, engajados)\n\n`;
+            let msg = `━━━ 🆕 NOVOS SUBS DESCOBERTOS (${newSubs.length}) ━━━\n`;
+            msg += `(30k+ membros, NSFW, engajados)\n\n`;
 
             for (const d of newSubs) {
-                const safeName = d.name.replace(/_/g, '\\_');
                 const verifTag = d.requiresVerification ? '🔒 verificação' : '🟢 aberto';
-                msg += `📌 *r/${safeName}* (${formatMembers(d.members)}) — ${verifTag}\n`;
+                msg += `📌 r/${d.name} (${formatMembers(d.members)}) — ${verifTag}\n`;
             }
-            msg += '\nResponda /aprovar para adicionar todos\\.';
-            await sendTelegramMessage(Number(chatId), msg);
+            msg += '\nResponda /aprovar para adicionar todos.';
+            await sendTelegramMessage(cid, msg);
         }
     }
 
-    // === MESSAGE 5: Summary ===
-    const total = guides.length;
-    let summary = `📊 *Resumo:* ${ready.length} pronto(s), ${needsKarma.length} precisam karma`;
+    // === MESSAGE: Summary ===
+    let summary = `📊 Resumo: ${ready.length} pronto(s), ${needsKarma.length} precisam karma`;
     if (discovered.filter(d => !d.isAlreadyAdded).length > 0) {
         summary += `, ${discovered.filter(d => !d.isAlreadyAdded).length} novos descobertos`;
     }
     if (needsKarma.length > 0) {
-        summary += `\n\n🤖 _Karma Builder focando nos subs que precisam\\. Você será notificada quando estiver elegível\\!_`;
+        summary += `\n\n🤖 Karma Builder focando nos subs que precisam. Você será notificada quando estiver elegível!`;
     }
-    await sendTelegramMessage(Number(chatId), summary);
+    await sendTelegramMessage(cid, summary);
 }
 
-function formatGuideMsg(guide: VerificationGuide): string {
-    const safeName = guide.subName.replace(/_/g, '\\_');
-    const diffIcon = guide.difficulty === 'fácil' ? '🟢' : guide.difficulty === 'médio' ? '🟡' : '🔴';
+/**
+ * Save guides to DB so they can be recovered if Telegram delivery fails
+ */
+async function saveGuidesToDB(modelId: string, guides: VerificationGuide[]): Promise<void> {
+    const supabase = getSupabaseAdmin();
 
-    let msg = `✅ *r/${safeName}* (${formatMembers(guide.members)}) ${diffIcon} ${guide.difficulty}\n`;
+    for (const guide of guides) {
+        try {
+            const { data: existing } = await supabase
+                .from('subreddits')
+                .select('posting_rules')
+                .eq('model_id', modelId)
+                .eq('name', guide.subName)
+                .single();
 
-    for (let i = 0; i < guide.steps.length; i++) {
-        msg += `   ${i + 1}\\. ${escTg(guide.steps[i])}\n`;
+            const existingRules = (existing?.posting_rules as Record<string, unknown>) || {};
+
+            await supabase
+                .from('subreddits')
+                .update({
+                    posting_rules: {
+                        ...existingRules,
+                        last_guide_at: new Date().toISOString(),
+                        verification_guide: {
+                            steps: guide.steps,
+                            karmaRequired: guide.karmaRequired,
+                            accountAgeRequired: guide.accountAgeRequired,
+                            verificationLink: guide.verificationLink,
+                            difficulty: guide.difficulty,
+                            isEligible: guide.isEligible,
+                            eligibilityReason: guide.eligibilityReason,
+                            generatedAt: new Date().toISOString(),
+                        },
+                    },
+                })
+                .eq('model_id', modelId)
+                .eq('name', guide.subName);
+        } catch (err) {
+            console.error(`  ⚠️ Save guide DB error for r/${guide.subName}:`, err instanceof Error ? err.message : err);
+        }
     }
-
-    if (guide.verificationLink) {
-        msg += `   🔗 ${guide.verificationLink}\n`;
-    }
-
-    msg += '\n';
-    return msg;
 }
 
 // =============================================
@@ -737,13 +773,16 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         console.error('  ⚠️ Karma force error:', err);
     }
 
-    // 9. Send report (wrapped in try/catch to never lose progress)
+    // 9. Save guides to DB (persist before sending — never lose data)
+    await saveGuidesToDB(modelId, guides);
+
+    // 10. Send report (wrapped in try/catch to never lose progress)
     try {
         await sendReport(String(chatId), accountInfo, guides, discovered);
     } catch (err) {
         console.error('  ⚠️ Report send error:', err instanceof Error ? err.message : err);
-        const safeSubs = guides.map(g => `- r/${g.subName.replace(/_/g, '\\_')} (${g.isEligible ? '✅' : '❌'})`).join('\n');
-        await sendTelegramMessage(chatId, `📋 *Guias gerados:*\n\n${safeSubs}\n\n_Erro ao formatar relatório completo. Use /verificar novamente._`);
+        const safeSubs = guides.map(g => `- r/${g.subName} (${g.isEligible ? '✅' : '❌'})`).join('\n');
+        await sendTelegramMessage(chatId, `📋 Guias gerados:\n\n${safeSubs}\n\nErro ao formatar. Use /verificar novamente.`);
     }
 
     // Show remaining count
