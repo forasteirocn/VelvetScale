@@ -662,17 +662,20 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         }, { onConflict: 'model_id,name' });
     }
 
-    // 6. Get all subs needing verification (refreshed)
+    // 6. Get all subs needing verification — ORDER by least recently analyzed first
     const { data: verifSubs } = await supabase
         .from('subreddits')
-        .select('name, member_count')
+        .select('name, member_count, posting_rules')
         .eq('model_id', modelId)
         .eq('is_approved', true)
-        .eq('needs_verification', true);
+        .eq('needs_verification', true)
+        .order('updated_at', { ascending: true, nullsFirst: true });
 
-    // 7. Generate guides (max 6 subs for speed, with progress)
-    const subsToGuide = (verifSubs || []).slice(0, 6);
-    await sendTelegramMessage(chatId, `📋 Gerando guias para ${subsToGuide.length} sub(s)...`);
+    const totalVerif = (verifSubs || []).length;
+
+    // 7. Generate guides (max 8 subs per run, rotating through all)
+    const subsToGuide = (verifSubs || []).slice(0, 8);
+    await sendTelegramMessage(chatId, `📋 Gerando guias para ${subsToGuide.length} de ${totalVerif} sub(s) pendentes...`);
 
     const guides: VerificationGuide[] = [];
     for (let i = 0; i < subsToGuide.length; i++) {
@@ -681,9 +684,16 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
             console.log(`  📋 [${i + 1}/${subsToGuide.length}] Analisando r/${sub.name}...`);
             const guide = await generateVerificationGuide(sub.name, accountInfo);
             guides.push(guide);
+
+            // Mark this sub as analyzed (moves to back of queue for next run)
+            await supabase
+                .from('subreddits')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('model_id', modelId)
+                .eq('name', sub.name);
+
         } catch (err) {
             console.error(`  ⚠️ Guide error for r/${sub.name}:`, err instanceof Error ? err.message : err);
-            // Add fallback guide so we still show something
             guides.push({
                 subName: sub.name,
                 members: sub.member_count || 0,
@@ -712,9 +722,14 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         await sendReport(String(chatId), accountInfo, guides, discovered);
     } catch (err) {
         console.error('  ⚠️ Report send error:', err instanceof Error ? err.message : err);
-        // Fallback: send a simple summary
         const safeSubs = guides.map(g => `- r/${g.subName.replace(/_/g, '\\_')} (${g.isEligible ? '✅' : '❌'})`).join('\n');
         await sendTelegramMessage(chatId, `📋 *Guias gerados:*\n\n${safeSubs}\n\n_Erro ao formatar relatório completo. Use /verificar novamente._`);
+    }
+
+    // Show remaining count
+    const remaining = totalVerif - subsToGuide.length;
+    if (remaining > 0) {
+        await sendTelegramMessage(chatId, `📌 Restam ${remaining} sub(s) para analisar. Mande /verificar novamente para ver os próximos.`);
     }
 
     // 10. Log
@@ -724,13 +739,15 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
             action: 'verification_guide_sent',
             details: {
                 subsScanned: guides.length,
+                totalPending: totalVerif,
+                remaining,
                 eligible: guides.filter(g => g.isEligible).length,
                 karmaForce: guides.filter(g => !g.isEligible).length,
                 discovered: discovered.length,
                 newSubs: newlyDiscovered.length,
             },
         });
-    } catch { /* ignore log errors */ }
+    } catch { /* ignore */ }
 
-    console.log(`  ✅ Verification guide sent: ${guides.length} guides, ${discovered.length} discovered`);
+    console.log(`  ✅ Verification guide sent: ${guides.length}/${totalVerif} guides, ${discovered.length} discovered`);
 }
