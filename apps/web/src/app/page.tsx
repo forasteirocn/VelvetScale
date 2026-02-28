@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 
 export default function HomePage() {
     return (
@@ -20,26 +21,32 @@ export default function HomePage() {
                         <span>VelvetScale</span>
                     </Link>
                     <div className="navbar-links">
-                        <Link href="/login" className="btn btn-secondary">Entrar</Link>
-                        <Link href="/register" className="btn btn-primary">Começar agora</Link>
+                        <Link href="#features" className="btn btn-secondary">Features</Link>
+                        <Link href="#pricing" className="btn btn-primary">Começar agora</Link>
                     </div>
                 </nav>
             </header>
 
             {/* Hero */}
-            <section className="hero">
-                <div className="hero-content animate-in">
+            <section className="hero container">
+                <div className="animate-in">
+                    <div className="hero-badge">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                        </svg>
+                        Powered by AI
+                    </div>
                     <h1>
-                        Suas redes sociais no <span className="gradient-text">piloto automático</span>
+                        Seu Twitter no <span className="gradient-text">piloto automático</span>
                     </h1>
                     <p>
-                        Agentes de IA autônomos que postam, engajam e promovem seu perfil no Reddit e Twitter/X.
-                        Tudo com um simples comando no WhatsApp.
+                        Um agente de IA que fala como você, posta como você e engaja como você —
+                        24 horas por dia, 7 dias por semana.
                     </p>
                     <div className="hero-cta">
-                        <Link href="/register" className="btn btn-primary btn-lg">
-                            Começar gratuitamente
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <Link href="#pricing" className="btn btn-primary btn-lg">
+                            Começar agora
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M5 12h14M12 5l7 7-7 7" />
                             </svg>
                         </Link>
@@ -50,151 +57,241 @@ export default function HomePage() {
                 </div>
             </section>
 
+            {/* Engagement Chart */}
+            <section className="chart-section container">
+                <div className="chart-wrapper animate-in" style={{ animationDelay: '0.2s' }}>
+                    <Image
+                        src="/engagement-chart.png"
+                        alt="Gráfico mostrando crescimento de engajamento no Twitter com VelvetScale"
+                        width={680}
+                        height={680}
+                        priority
+                    />
+                </div>
+                <p className="chart-caption">
+                    Dados de uma criadora real após 3 meses usando VelvetScale
+                </p>
+            </section>
+
             {/* Features */}
-            <section className="features container" id="features">
-                <h2>Tudo que você precisa para <span className="gradient-text">escalar</span></h2>
+            <section className="features-section container" id="features">
+                <div className="section-header">
+                    <h2>Tudo que seu Twitter <span className="gradient-text">precisa</span></h2>
+                    <p>Um agente inteligente que nunca dorme e sempre entende seu estilo</p>
+                </div>
 
                 <div className="features-grid">
                     <div className="feature-card animate-in">
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#25D366" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
-                            </svg>
-                        </div>
-                        <h3>Comandos via WhatsApp</h3>
+                        <div className="feature-icon feature-icon-purple">🤖</div>
+                        <h3>Personalidade Customizável</h3>
                         <p>
-                            Envie uma mensagem no WhatsApp e seu agente de IA cuida do resto.
-                            &quot;Poste algo divertido no Reddit&quot; — e pronto!
+                            Defina o tom de voz, estilo e personalidade do agente.
+                            Ele vai falar exatamente como você — ninguém percebe a diferença.
                         </p>
                     </div>
 
                     <div className="feature-card animate-in" style={{ animationDelay: '0.1s' }}>
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FF4500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <circle cx="12" cy="12" r="10" />
-                                <circle cx="12" cy="12" r="4" />
-                                <line x1="12" y1="2" x2="12" y2="4" />
-                                <line x1="12" y1="20" x2="12" y2="22" />
-                            </svg>
-                        </div>
-                        <h3>Reddit Inteligente</h3>
+                        <div className="feature-icon feature-icon-blue">📝</div>
+                        <h3>Posts Automáticos</h3>
                         <p>
-                            O agente encontra os melhores subreddits, cria posts que parecem naturais
-                            e engaja com os comentários para maximizar visibilidade.
+                            Tweets, threads e conteúdo de presença publicados nos melhores horários.
+                            O agente aprende quando sua audiência está ativa.
                         </p>
                     </div>
 
                     <div className="feature-card animate-in" style={{ animationDelay: '0.2s' }}>
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                            </svg>
-                        </div>
-                        <h3>IA Claude de Ponta</h3>
+                        <div className="feature-icon feature-icon-green">💬</div>
+                        <h3>Respostas Inteligentes</h3>
                         <p>
-                            Powered by Claude da Anthropic — gera conteúdo autêntico, entende contexto,
-                            e nunca parece um bot. Cada post é único.
+                            Responde menções automaticamente com a sua vibe.
+                            Seus seguidores recebem atenção em segundos, não horas.
                         </p>
                     </div>
 
                     <div className="feature-card animate-in" style={{ animationDelay: '0.3s' }}>
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1DA1F2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M23 3a10.9 10.9 0 01-3.14 1.53 4.48 4.48 0 00-7.86 3v1A10.66 10.66 0 013 4s-4 9 5 13a11.64 11.64 0 01-7 2c9 5 20 0 20-11.5 0-.28-.03-.56-.08-.83A7.72 7.72 0 0023 3z" />
-                            </svg>
-                        </div>
-                        <h3>Twitter/X (Em breve)</h3>
+                        <div className="feature-icon feature-icon-orange">🔥</div>
+                        <h3>Detector de Trends</h3>
                         <p>
-                            Tweets, threads e engajamento automático.
-                            Expanda sua presença em múltiplas plataformas ao mesmo tempo.
+                            O agente monitora tendências em tempo real e cria posts relevantes.
+                            Nunca mais perca uma trend que poderia viralizar.
                         </p>
                     </div>
 
                     <div className="feature-card animate-in" style={{ animationDelay: '0.4s' }}>
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <line x1="18" y1="20" x2="18" y2="10" />
-                                <line x1="12" y1="20" x2="12" y2="4" />
-                                <line x1="6" y1="20" x2="6" y2="14" />
-                            </svg>
-                        </div>
-                        <h3>Analytics em Tempo Real</h3>
+                        <div className="feature-icon feature-icon-cyan">📊</div>
+                        <h3>Aprendizado Contínuo</h3>
                         <p>
-                            Acompanhe engajamento, melhores horários de postagem,
-                            e performance de cada subreddit no seu dashboard.
+                            Analisa quais posts performam melhor e adapta a estratégia.
+                            Quanto mais usa, mais inteligente ele fica.
                         </p>
                     </div>
 
                     <div className="feature-card animate-in" style={{ animationDelay: '0.5s' }}>
-                        <div className="feature-icon">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F472B6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                            </svg>
-                        </div>
-                        <h3>Seguro e Discreto</h3>
+                        <div className="feature-icon feature-icon-pink">🛡️</div>
+                        <h3>Seguro e Natural</h3>
                         <p>
-                            Seus dados e credenciais são criptografados.
-                            O agente age de forma natural, sem levantar suspeitas.
+                            Age de forma 100% natural — nunca parece um bot.
+                            Seus dados e credenciais são protegidos com criptografia.
                         </p>
+                    </div>
+                </div>
+            </section>
+
+            {/* AI vs Human */}
+            <section className="comparison-section">
+                <div className="container">
+                    <div className="section-header">
+                        <h2>Por que IA e não um <span className="gradient-text">humano</span>?</h2>
+                        <p>Um social media manager humano custa de $500 a $2.000/mês e trabalha 8 horas</p>
+                    </div>
+                    <div className="comparison-wrapper animate-in">
+                        <Image
+                            src="/ai-vs-human.png"
+                            alt="Comparação entre agente de IA VelvetScale e gerente humano"
+                            width={600}
+                            height={600}
+                        />
                     </div>
                 </div>
             </section>
 
             {/* How it Works */}
-            <section className="features container" style={{ paddingTop: '60px' }}>
-                <h2>Como funciona em <span className="gradient-text">3 passos</span></h2>
+            <section className="steps-section container">
+                <div className="section-header">
+                    <h2>Funciona em <span className="gradient-text">3 passos</span></h2>
+                    <p>Configure uma vez e deixe a IA trabalhar por você</p>
+                </div>
 
-                <div className="features-grid" style={{ maxWidth: '900px', margin: '0 auto' }}>
-                    <div className="card animate-in" style={{ textAlign: 'center', padding: '40px 24px' }}>
-                        <div style={{ fontSize: '48px', marginBottom: '16px', fontWeight: 800 }} className="gradient-text">1</div>
-                        <h3 style={{ marginBottom: '12px', fontSize: '18px' }}>Conecte suas contas</h3>
-                        <p style={{ color: 'var(--vs-text-secondary)', fontSize: '14px' }}>
-                            Vincule seu Reddit e/ou Twitter ao VelvetScale em poucos cliques.
-                        </p>
+                <div className="steps-grid">
+                    <div className="step-card animate-in">
+                        <div className="step-number gradient-text">1</div>
+                        <h3>Conecte seu Twitter</h3>
+                        <p>Vincule sua conta com um clique. Sem senhas salvas, apenas autorização OAuth segura.</p>
                     </div>
 
-                    <div className="card animate-in" style={{ textAlign: 'center', padding: '40px 24px', animationDelay: '0.15s' }}>
-                        <div style={{ fontSize: '48px', marginBottom: '16px', fontWeight: 800 }} className="gradient-text">2</div>
-                        <h3 style={{ marginBottom: '12px', fontSize: '18px' }}>Configure seu perfil</h3>
-                        <p style={{ color: 'var(--vs-text-secondary)', fontSize: '14px' }}>
-                            Adicione sua bio, links e persona. O agente vai falar como você.
-                        </p>
+                    <div className="step-card animate-in" style={{ animationDelay: '0.15s' }}>
+                        <div className="step-number gradient-text">2</div>
+                        <h3>Defina sua personalidade</h3>
+                        <p>Escreva como você fala, seus interesses e estilo. O agente vai ser a sua versão digital.</p>
                     </div>
 
-                    <div className="card animate-in" style={{ textAlign: 'center', padding: '40px 24px', animationDelay: '0.3s' }}>
-                        <div style={{ fontSize: '48px', marginBottom: '16px', fontWeight: 800 }} className="gradient-text">3</div>
-                        <h3 style={{ marginBottom: '12px', fontSize: '18px' }}>Mande um WhatsApp</h3>
-                        <p style={{ color: 'var(--vs-text-secondary)', fontSize: '14px' }}>
-                            &quot;Poste no Reddit&quot;, &quot;Encontre subreddits&quot;, &quot;Estatísticas&quot; — e pronto!
-                        </p>
+                    <div className="step-card animate-in" style={{ animationDelay: '0.3s' }}>
+                        <div className="step-number gradient-text">3</div>
+                        <h3>Relaxe e cresça</h3>
+                        <p>O agente posta, responde e engaja 24/7. Acompanhe tudo pelo painel ou Telegram.</p>
                     </div>
                 </div>
             </section>
 
-            {/* CTA */}
-            <section style={{ padding: '120px 0', textAlign: 'center' }}>
+            {/* Pricing */}
+            <section className="pricing-section" id="pricing">
                 <div className="container">
-                    <h2 style={{ fontSize: '36px', fontWeight: 800, marginBottom: '20px' }}>
-                        Pronta para <span className="gradient-text">escalar</span>?
-                    </h2>
-                    <p style={{ color: 'var(--vs-text-secondary)', maxWidth: '500px', margin: '0 auto 32px', fontSize: '16px' }}>
-                        Junte-se às modelos que já estão usando IA para crescer nas redes sociais.
-                    </p>
-                    <Link href="/register" className="btn btn-primary btn-lg">
-                        Comece agora — é grátis para testar
-                    </Link>
+                    <div className="section-header">
+                        <h2>Planos <span className="gradient-text">simples</span></h2>
+                        <p>Sem surpresas. Cancele quando quiser.</p>
+                    </div>
+
+                    <div className="pricing-grid">
+                        {/* Starter */}
+                        <div className="pricing-card">
+                            <h3>Starter</h3>
+                            <p style={{ color: 'var(--vs-text-secondary)', fontSize: '14px' }}>Ideal para começar</p>
+                            <div className="pricing-price">
+                                $49<span>/mês</span>
+                            </div>
+                            <ul className="pricing-features">
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    1 conta Twitter
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Posts automáticos diários
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Respostas a menções
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Detector de trends
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Personalidade customizável
+                                </li>
+                            </ul>
+                            <Link href="#" className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center' }}>
+                                Escolher Starter
+                            </Link>
+                        </div>
+
+                        {/* Pro */}
+                        <div className="pricing-card featured">
+                            <div className="pricing-badge">Mais popular</div>
+                            <h3>Pro</h3>
+                            <p style={{ color: 'var(--vs-text-secondary)', fontSize: '14px' }}>Para quem quer o máximo</p>
+                            <div className="pricing-price">
+                                $99<span>/mês</span>
+                            </div>
+                            <ul className="pricing-features">
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Twitter + Reddit
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Tudo do Starter
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Analytics avançado
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Suporte prioritário
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Estratégia de crescimento
+                                </li>
+                                <li>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+                                    Dashboard dedicado
+                                </li>
+                            </ul>
+                            <Link href="#" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
+                                Escolher Pro
+                            </Link>
+                        </div>
+                    </div>
                 </div>
+            </section>
+
+            {/* CTA Final */}
+            <section className="cta-section container">
+                <h2>
+                    Pronta para <span className="gradient-text">escalar</span>?
+                </h2>
+                <p>
+                    Junte-se às criadoras que já estão usando IA para crescer no Twitter.
+                    Configure em menos de 5 minutos.
+                </p>
+                <Link href="#pricing" className="btn btn-primary btn-lg">
+                    Comece agora — teste grátis por 7 dias
+                </Link>
             </section>
 
             {/* Footer */}
-            <footer style={{ borderTop: '1px solid var(--vs-border)', padding: '32px 0' }}>
-                <div className="container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <footer className="footer">
+                <div className="container footer-inner">
                     <span style={{ color: 'var(--vs-text-muted)', fontSize: '14px' }}>
                         © 2026 VelvetScale. Todos os direitos reservados.
                     </span>
-                    <div style={{ display: 'flex', gap: '24px' }}>
-                        <Link href="/terms" style={{ color: 'var(--vs-text-muted)', fontSize: '14px', textDecoration: 'none' }}>Termos</Link>
-                        <Link href="/privacy" style={{ color: 'var(--vs-text-muted)', fontSize: '14px', textDecoration: 'none' }}>Privacidade</Link>
+                    <div className="footer-links">
+                        <Link href="/terms">Termos</Link>
+                        <Link href="/privacy">Privacidade</Link>
+                        <a href="mailto:support@velvetscale.com">Contato</a>
                     </div>
                 </div>
             </footer>
