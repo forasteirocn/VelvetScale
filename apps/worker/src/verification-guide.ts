@@ -18,7 +18,7 @@ const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const MIN_MEMBERS = 500_000;
+const MIN_MEMBERS = 30_000;
 
 let guideInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -146,16 +146,19 @@ async function discoverHighValueSubs(
             model: 'claude-sonnet-4-20250514',
             max_tokens: 800,
             system: `You are an expert Reddit NSFW marketing strategist.
-Suggest 15-20 of the BIGGEST (500k+ members) NSFW subreddits for adult content creators.
+Suggest 25-30 NSFW subreddits (30k+ members) for adult content creators.
 
 RULES:
 - ONLY suggest REAL, active, NSFW subreddits
-- ONLY subs with 500,000+ members (the bigger the better)
+- Minimum 30,000 members, but the bigger the better
+- The sub MUST be actively engaged (daily posts, comments, upvotes)
+- Avoid dead/inactive subs even if they have many members
 - Focus on: body types, poses, aesthetics, photography niches
 - Consider the model's bio and look
-- Include classic big subs AND niche-large ones
+- Mix classic big subs (500k+) with mid-size niche subs (30k-500k)
+- Niche subs often have BETTER engagement and less competition
 
-Examples of qualifying subs: gonewild, RealGirls, ass, booty, thick, curvy, brunette, Nude_Selfie, Nudes, nsfw, etc.
+Examples: gonewild, RealGirls, ass, booty, thick, curvy, brunette, Nude_Selfie, latinas, fitgirls, BrazilianBabes, tightdresses, yogapants, etc.
 
 Respond with JSON array: [{"name": "SubName"}, ...]
 No "r/" prefix. Just the exact sub name.`,
@@ -165,7 +168,7 @@ No "r/" prefix. Just the exact sub name.`,
 Persona: ${persona || 'confident, flirty'}
 Already in: ${Array.from(existingSubNames).slice(0, 20).join(', ') || 'none'}
 
-Suggest 15-20 big NSFW subs (500k+ members) she should be in.`,
+Suggest 25-30 NSFW subs (30k+ members, actively engaged) she should be in.`,
             }],
         });
 
@@ -540,7 +543,7 @@ async function sendReport(
 
         if (newSubs.length > 0) {
             let msg = `━━━ 🆕 *NOVOS SUBS DESCOBERTOS* (${newSubs.length}) ━━━\n`;
-            msg += `(500k\\+ membros, NSFW, engajados)\n\n`;
+            msg += `(30k\\+ membros, NSFW, engajados)\n\n`;
 
             for (const d of newSubs) {
                 const safeName = d.name.replace(/_/g, '\\_');
