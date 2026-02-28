@@ -662,19 +662,33 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         }, { onConflict: 'model_id,name' });
     }
 
-    // 6. Get all subs needing verification — ORDER by least recently analyzed first
-    const { data: verifSubs } = await supabase
+    // 6. Get all subs needing verification
+    const { data: verifSubs, error: verifError } = await supabase
         .from('subreddits')
         .select('name, member_count, posting_rules')
         .eq('model_id', modelId)
         .eq('is_approved', true)
-        .eq('needs_verification', true)
-        .order('updated_at', { ascending: true, nullsFirst: true });
+        .eq('needs_verification', true);
 
-    const totalVerif = (verifSubs || []).length;
+    if (verifError) {
+        console.error('  ⚠️ Verification subs query error:', verifError.message);
+    }
+
+    // Sort: subs without last_guide_at first (never analyzed), then oldest first
+    const sortedVerifSubs = (verifSubs || []).sort((a, b) => {
+        const aRules = a.posting_rules as Record<string, unknown> | null;
+        const bRules = b.posting_rules as Record<string, unknown> | null;
+        const aTime = (aRules?.last_guide_at as string) || '';
+        const bTime = (bRules?.last_guide_at as string) || '';
+        if (!aTime && bTime) return -1;  // a never analyzed, goes first
+        if (aTime && !bTime) return 1;   // b never analyzed, goes first
+        return aTime.localeCompare(bTime); // oldest first
+    });
+
+    const totalVerif = sortedVerifSubs.length;
 
     // 7. Generate guides (max 8 subs per run, rotating through all)
-    const subsToGuide = (verifSubs || []).slice(0, 8);
+    const subsToGuide = sortedVerifSubs.slice(0, 8);
     await sendTelegramMessage(chatId, `📋 Gerando guias para ${subsToGuide.length} de ${totalVerif} sub(s) pendentes...`);
 
     const guides: VerificationGuide[] = [];
@@ -685,10 +699,16 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
             const guide = await generateVerificationGuide(sub.name, accountInfo);
             guides.push(guide);
 
-            // Mark this sub as analyzed (moves to back of queue for next run)
+            // Mark this sub as analyzed (rotation: moves to back of queue)
+            const existingRules = (sub.posting_rules as Record<string, unknown>) || {};
             await supabase
                 .from('subreddits')
-                .update({ updated_at: new Date().toISOString() })
+                .update({
+                    posting_rules: {
+                        ...existingRules,
+                        last_guide_at: new Date().toISOString(),
+                    },
+                })
                 .eq('model_id', modelId)
                 .eq('name', sub.name);
 
