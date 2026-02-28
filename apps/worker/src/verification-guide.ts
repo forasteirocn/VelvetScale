@@ -179,44 +179,41 @@ Suggest 25-30 NSFW subs (30k+ members, actively engaged) she should be in.`,
         const suggestions: Array<{ name: string }> = JSON.parse(jsonMatch[0]);
         const verified: DiscoveredSub[] = [];
 
-        for (const s of suggestions) {
-            if (!s.name) continue;
+        // Process in batches of 3 for speed (parallel fetches)
+        const uniqueSuggestions = suggestions.filter(s => s.name).slice(0, 20);
 
-            try {
-                const aboutRes = await axios.get(`https://www.reddit.com/r/${s.name}/about.json`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
-                    timeout: 10000,
-                });
+        for (let i = 0; i < uniqueSuggestions.length && verified.length < 15; i += 3) {
+            const batch = uniqueSuggestions.slice(i, i + 3);
 
-                const data = aboutRes.data?.data;
-                if (!data) continue;
+            const results = await Promise.allSettled(
+                batch.map(async (s) => {
+                    const aboutRes = await axios.get(`https://www.reddit.com/r/${s.name}/about.json`, {
+                        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                        timeout: 8000,
+                    });
+                    return { name: s.name, data: aboutRes.data?.data };
+                })
+            );
 
+            for (const result of results) {
+                if (result.status !== 'fulfilled' || !result.value.data) continue;
+                const { name, data } = result.value;
                 const members = data.subscribers || 0;
                 const isNSFW = data.over18 || false;
 
-                // Filter: 500k+ AND NSFW
                 if (members < MIN_MEMBERS || !isNSFW) continue;
 
-                // Check rules for verification
-                let requiresVerif = false;
-                try {
-                    const rules = await getSubRules(s.name);
-                    requiresVerif = rules?.requiresVerification || false;
-                } catch { /* ignore */ }
-
                 verified.push({
-                    name: s.name,
+                    name,
                     members,
                     description: (data.public_description || '').substring(0, 200),
-                    requiresVerification: requiresVerif,
-                    isAlreadyAdded: existingSubNames.has(s.name.toLowerCase()),
+                    requiresVerification: false, // Will be checked in guide generation
+                    isAlreadyAdded: existingSubNames.has(name.toLowerCase()),
                 });
+            }
 
-                // Rate limit
-                await new Promise(r => setTimeout(r, 1500));
-            } catch { continue; }
-
-            if (verified.length >= 12) break;
+            // Small delay between batches
+            await new Promise(r => setTimeout(r, 500));
         }
 
         return verified.sort((a, b) => b.members - a.members);
@@ -615,10 +612,11 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
 
     const existingSubNames = new Set((allSubs || []).map(s => s.name.toLowerCase()));
 
-    // 2. Force-scan existing subs for verification requirements
+    // 2. Force-scan existing subs for verification (max 10 unchecked, fast)
+    const uncheckedSubs = (allSubs || []).filter(s => !s.needs_verification).slice(0, 10);
     let newlyFlagged = 0;
-    for (const sub of allSubs || []) {
-        if (sub.needs_verification) continue;
+
+    for (const sub of uncheckedSubs) {
         try {
             const rules = await getSubRules(sub.name);
             if (rules?.requiresVerification) {
@@ -630,7 +628,7 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
                 newlyFlagged++;
             }
         } catch { /* ignore */ }
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 500));
     }
 
     if (newlyFlagged > 0) {
@@ -641,8 +639,8 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
     await sendTelegramMessage(chatId, '👤 Buscando dados da sua conta Reddit...');
     const accountInfo = await getRedditAccountInfo(modelId);
 
-    // 4. Discover new high-value subs (500k+, NSFW)
-    await sendTelegramMessage(chatId, '🌐 Descobrindo subs de alto valor (500k+ membros, NSFW)...');
+    // 4. Discover new high-value subs (30k+, NSFW)
+    await sendTelegramMessage(chatId, '🌐 Descobrindo subs de alto valor (30k+ membros, NSFW)...');
     const discovered = await discoverHighValueSubs(
         model.bio || '',
         model.persona || '',
@@ -672,14 +670,15 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         .eq('is_approved', true)
         .eq('needs_verification', true);
 
-    // 7. Generate guides
-    await sendTelegramMessage(chatId, `📋 Gerando guias de verificação para ${(verifSubs || []).length} sub(s)...`);
+    // 7. Generate guides (max 6 subs for speed)
+    const subsToGuide = (verifSubs || []).slice(0, 6);
+    await sendTelegramMessage(chatId, `📋 Gerando guias para ${subsToGuide.length} sub(s)...`);
 
     const guides: VerificationGuide[] = [];
-    for (const sub of (verifSubs || []).slice(0, 10)) {
+    for (const sub of subsToGuide) {
         const guide = await generateVerificationGuide(sub.name, accountInfo);
         guides.push(guide);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 800));
     }
 
     // 8. Activate karma force for ineligible subs
