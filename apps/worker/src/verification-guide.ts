@@ -6,24 +6,27 @@ import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
 
 // =============================================
-// VelvetScale Verification Guide
-// Analyzes subs that need verification and sends
-// step-by-step guides via Telegram
-// Runs once per day
+// VelvetScale Verification Guide v2
+// 1. Discovers high-value subs (500k+, NSFW, engaged)
+// 2. Analyzes verification requirements via Claude
+// 3. Checks eligibility (karma, account age)
+// 4. Activates Karma Task Force for ineligible subs
+// 5. Sends organized Telegram report
 // =============================================
 
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+const MIN_MEMBERS = 500_000;
+
 let guideInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startVerificationGuide(): void {
     if (guideInterval) return;
 
-    console.log('🔍 Verification Guide iniciado (diário, executa imediatamente)');
+    console.log('🔍 Verification Guide v2 iniciado (diário, executa imediatamente)');
 
-    // Execute immediately, then every 24h
     scanVerificationSubs();
     guideInterval = setInterval(scanVerificationSubs, 24 * 60 * 60 * 1000);
 }
@@ -36,7 +39,7 @@ export function stopVerificationGuide(): void {
 }
 
 // =============================================
-// 1. Get Reddit account info (karma, age, username)
+// 1. Reddit Account Info
 // =============================================
 
 interface RedditAccountInfo {
@@ -44,50 +47,25 @@ interface RedditAccountInfo {
     totalKarma: number;
     postKarma: number;
     commentKarma: number;
-    accountAge: string; // human-readable
+    accountAge: string;
     accountAgeDays: number;
     isVerifiedEmail: boolean;
 }
 
-/**
- * Fetch Reddit account info by loading the user profile page JSON
- * Uses the model's stored cookies to get the authenticated user data
- */
 async function getRedditAccountInfo(modelId: string): Promise<RedditAccountInfo | null> {
     try {
         const path = await import('path');
         const fs = await import('fs');
         const cookiePath = path.join(process.cwd(), '.reddit-sessions', `${modelId}.json`);
 
-        if (!fs.existsSync(cookiePath)) {
-            return null;
-        }
+        if (!fs.existsSync(cookiePath)) return null;
 
         const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
-
-        // Extract username from cookies (reddit_session cookie or display_name)
-        // Try to get username from the cookie data
-        let username = '';
-        for (const cookie of cookies) {
-            if (cookie.name === 'reddit_session' || cookie.name === 'user') {
-                // The value sometimes contains the username
-                try {
-                    const decoded = decodeURIComponent(cookie.value);
-                    const parts = decoded.split(',');
-                    if (parts[0] && parts[0].length < 30) {
-                        username = parts[0];
-                    }
-                } catch { /* ignore */ }
-            }
-        }
-
-        // Build cookie string for HTTP request
         const cookieStr = cookies
             .filter((c: any) => c.domain?.includes('reddit'))
             .map((c: any) => `${c.name}=${c.value}`)
             .join('; ');
 
-        // Fetch /api/me.json with cookies to get the authenticated user info
         const response = await axios.get('https://www.reddit.com/api/me.json', {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
@@ -97,16 +75,16 @@ async function getRedditAccountInfo(modelId: string): Promise<RedditAccountInfo 
         });
 
         const data = response.data?.data || response.data;
-        if (!data || !data.name) {
-            // Fallback: try old.reddit.com
-            const fallbackRes = await axios.get('https://old.reddit.com/api/me.json', {
+        if (!data?.name) {
+            // Fallback: old.reddit.com
+            const fb = await axios.get('https://old.reddit.com/api/me.json', {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                     'Cookie': cookieStr,
                 },
                 timeout: 15000,
             });
-            const fbData = fallbackRes.data?.data || fallbackRes.data;
+            const fbData = fb.data?.data || fb.data;
             if (!fbData?.name) return null;
             return parseAccountInfo(fbData);
         }
@@ -124,14 +102,12 @@ function parseAccountInfo(data: any): RedditAccountInfo {
     const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
 
     let ageStr: string;
-    if (ageDays < 30) {
-        ageStr = `${ageDays} dias`;
-    } else if (ageDays < 365) {
-        ageStr = `${Math.floor(ageDays / 30)} meses`;
-    } else {
+    if (ageDays < 30) ageStr = `${ageDays} dias`;
+    else if (ageDays < 365) ageStr = `${Math.floor(ageDays / 30)} meses`;
+    else {
         const years = Math.floor(ageDays / 365);
         const months = Math.floor((ageDays % 365) / 30);
-        ageStr = months > 0 ? `${years} ano(s) e ${months} meses` : `${years} ano(s)`;
+        ageStr = months > 0 ? `${years}a ${months}m` : `${years} ano(s)`;
     }
 
     return {
@@ -146,11 +122,114 @@ function parseAccountInfo(data: any): RedditAccountInfo {
 }
 
 // =============================================
-// 2. Fetch detailed verification instructions
+// 2. Discover high-value subs (500k+, NSFW)
+// =============================================
+
+interface DiscoveredSub {
+    name: string;
+    members: number;
+    description: string;
+    requiresVerification: boolean;
+    isAlreadyAdded: boolean;
+}
+
+/**
+ * Ask Claude for high-value NSFW subs, then validate via Reddit API
+ */
+async function discoverHighValueSubs(
+    bio: string,
+    persona: string,
+    existingSubNames: Set<string>
+): Promise<DiscoveredSub[]> {
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 800,
+            system: `You are an expert Reddit NSFW marketing strategist.
+Suggest 15-20 of the BIGGEST (500k+ members) NSFW subreddits for adult content creators.
+
+RULES:
+- ONLY suggest REAL, active, NSFW subreddits
+- ONLY subs with 500,000+ members (the bigger the better)
+- Focus on: body types, poses, aesthetics, photography niches
+- Consider the model's bio and look
+- Include classic big subs AND niche-large ones
+
+Examples of qualifying subs: gonewild, RealGirls, ass, booty, thick, curvy, brunette, Nude_Selfie, Nudes, nsfw, etc.
+
+Respond with JSON array: [{"name": "SubName"}, ...]
+No "r/" prefix. Just the exact sub name.`,
+            messages: [{
+                role: 'user',
+                content: `Bio: ${bio || 'Brazilian model, fit, brunette'}
+Persona: ${persona || 'confident, flirty'}
+Already in: ${Array.from(existingSubNames).slice(0, 20).join(', ') || 'none'}
+
+Suggest 15-20 big NSFW subs (500k+ members) she should be in.`,
+            }],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) return [];
+
+        const suggestions: Array<{ name: string }> = JSON.parse(jsonMatch[0]);
+        const verified: DiscoveredSub[] = [];
+
+        for (const s of suggestions) {
+            if (!s.name) continue;
+
+            try {
+                const aboutRes = await axios.get(`https://www.reddit.com/r/${s.name}/about.json`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                    timeout: 10000,
+                });
+
+                const data = aboutRes.data?.data;
+                if (!data) continue;
+
+                const members = data.subscribers || 0;
+                const isNSFW = data.over18 || false;
+
+                // Filter: 500k+ AND NSFW
+                if (members < MIN_MEMBERS || !isNSFW) continue;
+
+                // Check rules for verification
+                let requiresVerif = false;
+                try {
+                    const rules = await getSubRules(s.name);
+                    requiresVerif = rules?.requiresVerification || false;
+                } catch { /* ignore */ }
+
+                verified.push({
+                    name: s.name,
+                    members,
+                    description: (data.public_description || '').substring(0, 200),
+                    requiresVerification: requiresVerif,
+                    isAlreadyAdded: existingSubNames.has(s.name.toLowerCase()),
+                });
+
+                // Rate limit
+                await new Promise(r => setTimeout(r, 1500));
+            } catch { continue; }
+
+            if (verified.length >= 12) break;
+        }
+
+        return verified.sort((a, b) => b.members - a.members);
+    } catch (err) {
+        console.error('  ⚠️ Discovery error:', err instanceof Error ? err.message : err);
+        return [];
+    }
+}
+
+// =============================================
+// 3. Verification Guide Generation
 // =============================================
 
 interface VerificationGuide {
     subName: string;
+    members: number;
     steps: string[];
     karmaRequired: number | null;
     accountAgeRequired: string | null;
@@ -160,41 +239,66 @@ interface VerificationGuide {
     eligibilityReason: string;
 }
 
-/**
- * Use Claude to parse sub rules into a verification guide
- */
 async function generateVerificationGuide(
     subName: string,
-    rawRules: string,
-    aboutDescription: string,
     accountInfo: RedditAccountInfo | null
 ): Promise<VerificationGuide> {
+    let rawRules = '';
+    let description = '';
+    let members = 0;
+
+    try {
+        const [rulesRes, aboutRes] = await Promise.all([
+            axios.get(`https://www.reddit.com/r/${subName}/about/rules.json`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                timeout: 10000,
+            }).catch(() => ({ data: { rules: [] } })),
+            axios.get(`https://www.reddit.com/r/${subName}/about.json`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                timeout: 10000,
+            }).catch(() => ({ data: { data: {} } })),
+        ]);
+
+        const rulesList = rulesRes.data?.rules || [];
+        rawRules = rulesList.map((r: any) =>
+            `${r.short_name || ''}: ${r.description || ''}`.trim()
+        ).join('\n');
+
+        const aboutData = aboutRes.data?.data || {};
+        description = aboutData.public_description || aboutData.description || '';
+        members = aboutData.subscribers || 0;
+
+        // Try verification wiki
+        try {
+            const wikiRes = await axios.get(`https://www.reddit.com/r/${subName}/wiki/verification.json`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
+                timeout: 10000,
+            });
+            const wikiContent = wikiRes.data?.data?.content_md || '';
+            if (wikiContent) {
+                rawRules += '\n\n--- VERIFICATION WIKI ---\n' + wikiContent.substring(0, 1500);
+            }
+        } catch { /* no wiki */ }
+    } catch { /* ignore */ }
+
     try {
         const response = await anthropic.messages.create({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 600,
             system: `You analyze subreddit verification requirements and create a clear guide.
 
-Given the subreddit rules and description, extract:
-1. Step-by-step verification instructions (what to do, where to submit)
-2. Karma requirements (if mentioned)
-3. Account age requirements (if mentioned)
-4. Link to verification post/wiki (if mentioned)
-5. Difficulty level (easy/medium/hard)
-
 ${accountInfo ? `
-User's current stats:
+User stats:
 - Username: u/${accountInfo.username}
 - Total karma: ${accountInfo.totalKarma}
 - Post karma: ${accountInfo.postKarma}
 - Comment karma: ${accountInfo.commentKarma}
 - Account age: ${accountInfo.accountAge} (${accountInfo.accountAgeDays} days)
-- Verified email: ${accountInfo.isVerifiedEmail}
 ` : ''}
 
 Respond with JSON:
 {
-  "steps": ["Passo 1: ...", "Passo 2: ...", "Passo 3: ..."],
+  "steps": ["Passo 1: ...", "Passo 2: ..."],
   "karmaRequired": number or null,
   "accountAgeRequired": "string" or null,
   "verificationLink": "URL" or null,
@@ -204,21 +308,17 @@ Respond with JSON:
 }
 
 IMPORTANT:
-- Write ALL steps in Portuguese (Brazilian)
-- Be VERY specific: mention modmail, verification posts, photo requirements
-- Most NSFW subs require a photo holding a paper with the sub name + your username
-- If the sub uses a verification bot, mention it
-- For eligibility, check karma and account age against requirements`,
+- Write ALL steps in Portuguese (Brazilian), be SPECIFIC
+- Most NSFW subs require a photo holding paper with sub name + username + date
+- Check karma and age against requirements for eligibility
+- If no specific karma requirement found, assume eligible`,
             messages: [{
                 role: 'user',
                 content: `Subreddit: r/${subName}
+Description: ${description.substring(0, 400)}
+Rules: ${rawRules.substring(0, 2000)}
 
-Description: ${aboutDescription.substring(0, 500)}
-
-Rules:
-${rawRules.substring(0, 2000)}
-
-Generate a verification guide in Portuguese.`,
+Generate verification guide in Portuguese.`,
             }],
         });
 
@@ -227,19 +327,18 @@ Generate a verification guide in Portuguese.`,
         if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]) as VerificationGuide;
             parsed.subName = subName;
+            parsed.members = members;
             return parsed;
         }
-    } catch (err) {
-        console.error(`  ⚠️ Guide generation error for r/${subName}:`, err instanceof Error ? err.message : err);
-    }
+    } catch { /* fallback below */ }
 
-    // Default fallback
     return {
         subName,
+        members,
         steps: [
-            'Envie uma mensagem (modmail) para os moderadores do sub',
-            'Inclua uma foto segurando um papel com: nome do sub + seu username + data',
-            'Aguarde aprovação dos mods (pode levar 24-72h)',
+            'Mande modmail para os moderadores do sub',
+            'Inclua foto segurando papel com: nome do sub + seu username + data',
+            'Aguarde aprovação (24-72h)',
         ],
         karmaRequired: null,
         accountAgeRequired: null,
@@ -251,28 +350,22 @@ Generate a verification guide in Portuguese.`,
 }
 
 // =============================================
-// 3. Main scan: find subs needing verification
+// 4. Main Scan
 // =============================================
 
 async function scanVerificationSubs(): Promise<void> {
-    console.log('🔍 Verificação Guide: Escaneando subs que precisam de verificação...');
-
+    console.log('🔍 Verification Guide v2: Scan diário...');
     const supabase = getSupabaseAdmin();
 
-    // Get all active models with reddit enabled
     const { data: models } = await supabase
         .from('models')
         .select('id, phone, bio, persona, enabled_platforms')
         .eq('status', 'active');
 
-    if (!models?.length) {
-        console.log('🔍 Verification Guide: Nenhum modelo ativo');
-        return;
-    }
+    if (!models?.length) return;
 
     for (const model of models) {
         if (!isPlatformEnabled(model, 'reddit')) continue;
-
         try {
             await scanForModel(model);
         } catch (err) {
@@ -286,23 +379,9 @@ async function scanForModel(
 ): Promise<void> {
     const supabase = getSupabaseAdmin();
 
-    // 1. Find subs that need verification (and haven't been notified recently)
-    const { data: subs } = await supabase
-        .from('subreddits')
-        .select('name, needs_verification, posting_rules, member_count')
-        .eq('model_id', model.id)
-        .eq('is_approved', true)
-        .eq('needs_verification', true);
-
-    if (!subs?.length) {
-        console.log(`  🔍 ${model.id.substring(0, 8)}: Nenhum sub pendente de verificação`);
-        return;
-    }
-
-    // Check if we already sent a guide today (avoid spam)
+    // Skip if already sent today
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
-
     const { count: alreadySent } = await supabase
         .from('agent_logs')
         .select('*', { count: 'exact', head: true })
@@ -311,187 +390,192 @@ async function scanForModel(
         .gte('created_at', todayStart.toISOString());
 
     if ((alreadySent || 0) > 0) {
-        console.log(`  🔍 ${model.id.substring(0, 8)}: Guia já enviado hoje, pulando`);
+        console.log(`  🔍 ${model.id.substring(0, 8)}: Guia já enviado hoje`);
         return;
     }
 
-    // 2. Get Reddit account info (karma, age)
-    console.log(`  🔍 Buscando info da conta Reddit para ${model.id.substring(0, 8)}...`);
-    const accountInfo = await getRedditAccountInfo(model.id);
+    // Get subs that need verification
+    const { data: verifSubs } = await supabase
+        .from('subreddits')
+        .select('name, needs_verification, member_count')
+        .eq('model_id', model.id)
+        .eq('is_approved', true)
+        .eq('needs_verification', true);
 
-    if (accountInfo) {
-        console.log(`  👤 u/${accountInfo.username}: ${accountInfo.totalKarma} karma, conta ${accountInfo.accountAge}`);
-    } else {
-        console.log(`  ⚠️ Não conseguiu buscar info da conta Reddit`);
+    if (!verifSubs?.length) {
+        console.log(`  🔍 ${model.id.substring(0, 8)}: Nenhum sub pendente de verificação`);
+        return;
     }
 
-    // 3. Generate guides for each sub
+    // Get account info
+    const accountInfo = await getRedditAccountInfo(model.id);
+    if (accountInfo) {
+        console.log(`  👤 u/${accountInfo.username}: ${accountInfo.totalKarma} karma, ${accountInfo.accountAge}`);
+    }
+
+    // Generate guides for verification subs
     const guides: VerificationGuide[] = [];
-
-    for (const sub of subs) {
-        console.log(`  📋 Analisando regras de r/${sub.name}...`);
-
-        // Fetch fresh rules
-        let rawRules = '';
-        let description = '';
-
-        try {
-            const [rulesRes, aboutRes] = await Promise.all([
-                axios.get(`https://www.reddit.com/r/${sub.name}/about/rules.json`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
-                    timeout: 10000,
-                }).catch(() => ({ data: { rules: [] } })),
-                axios.get(`https://www.reddit.com/r/${sub.name}/about.json`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
-                    timeout: 10000,
-                }).catch(() => ({ data: { data: {} } })),
-            ]);
-
-            const rulesList = rulesRes.data?.rules || [];
-            rawRules = rulesList.map((r: any) =>
-                `${r.short_name || ''}: ${r.description || ''}`.trim()
-            ).join('\n');
-
-            const aboutData = aboutRes.data?.data || {};
-            description = aboutData.public_description || aboutData.description || '';
-
-            // Also try to find verification-specific wiki/sticky
-            try {
-                const wikiRes = await axios.get(`https://www.reddit.com/r/${sub.name}/wiki/verification.json`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VelvetScale/1.0)' },
-                    timeout: 10000,
-                });
-                const wikiContent = wikiRes.data?.data?.content_md || '';
-                if (wikiContent) {
-                    rawRules += '\n\n--- VERIFICATION WIKI ---\n' + wikiContent.substring(0, 1500);
-                }
-            } catch { /* no wiki page */ }
-
-        } catch { /* ignore fetch errors */ }
-
-        const guide = await generateVerificationGuide(
-            sub.name,
-            rawRules || 'No specific rules found',
-            description,
-            accountInfo
-        );
-
+    for (const sub of verifSubs.slice(0, 8)) {
+        console.log(`  📋 Analisando r/${sub.name}...`);
+        const guide = await generateVerificationGuide(sub.name, accountInfo);
         guides.push(guide);
-
-        // Rate limit between subs
         await new Promise(r => setTimeout(r, 2000));
     }
 
-    if (!guides.length) return;
+    if (guides.length > 0) {
+        // Activate karma priority for ineligible subs
+        await activateKarmaForce(model.id, guides.filter(g => !g.isEligible));
 
-    // 4. Send comprehensive Telegram message
-    await sendVerificationReport(model.phone, accountInfo, guides);
+        // Send report
+        await sendReport(model.phone, accountInfo, guides, []);
+    }
 
-    // 5. Log that we sent the guide
+    // Log
     await supabase.from('agent_logs').insert({
         model_id: model.id,
         action: 'verification_guide_sent',
         details: {
             subsScanned: guides.length,
             eligible: guides.filter(g => g.isEligible).length,
-            notEligible: guides.filter(g => !g.isEligible).length,
-            accountKarma: accountInfo?.totalKarma || null,
+            karmaForceActivated: guides.filter(g => !g.isEligible).length,
         },
     });
-
-    console.log(`  ✅ Verification guide sent for ${model.id.substring(0, 8)} (${guides.length} subs)`);
 }
 
 // =============================================
-// 4. Build and send Telegram report
+// 5. Karma Task Force
 // =============================================
 
-async function sendVerificationReport(
+async function activateKarmaForce(modelId: string, ineligibleGuides: VerificationGuide[]): Promise<void> {
+    if (!ineligibleGuides.length) return;
+
+    const supabase = getSupabaseAdmin();
+
+    for (const guide of ineligibleGuides) {
+        // Ensure sub exists in DB
+        await supabase.from('subreddits').upsert({
+            model_id: modelId,
+            name: guide.subName,
+            needs_verification: true,
+            karma_priority: true,
+            member_count: guide.members,
+            is_approved: true,
+            nsfw: true,
+        }, { onConflict: 'model_id,name' });
+
+        console.log(`  🔥 Karma Force ATIVADO para r/${guide.subName}`);
+    }
+}
+
+// =============================================
+// 6. Telegram Report (Beautiful UI)
+// =============================================
+
+function formatMembers(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+    return String(n);
+}
+
+function escTg(text: string): string {
+    return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ');
+}
+
+async function sendReport(
     chatId: string,
     accountInfo: RedditAccountInfo | null,
-    guides: VerificationGuide[]
+    guides: VerificationGuide[],
+    discovered: DiscoveredSub[]
 ): Promise<void> {
-    // Build header with account stats
-    let msg = '🔐 *GUIA DE VERIFICAÇÃO*\n\n';
-
+    // === MESSAGE 1: Account Stats ===
+    let header = '🔐 *VERIFICAÇÃO*\n\n';
     if (accountInfo) {
-        const safeUser = accountInfo.username.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
-        msg += `👤 *Sua conta:* u/${safeUser}\n`;
-        msg += `⭐ Karma total: ${accountInfo.totalKarma.toLocaleString('pt-BR')}\n`;
-        msg += `📝 Post karma: ${accountInfo.postKarma.toLocaleString('pt-BR')}\n`;
-        msg += `💬 Comment karma: ${accountInfo.commentKarma.toLocaleString('pt-BR')}\n`;
-        msg += `📅 Idade da conta: ${accountInfo.accountAge}\n`;
-        msg += `📧 Email verificado: ${accountInfo.isVerifiedEmail ? 'Sim ✅' : 'Não ❌'}\n`;
-        msg += '\n━━━━━━━━━━━━━━━━━\n\n';
+        header += `👤 u/${escTg(accountInfo.username)}\n`;
+        header += `⭐ ${accountInfo.totalKarma.toLocaleString('pt-BR')} karma total\n`;
+        header += `📝 ${accountInfo.postKarma.toLocaleString('pt-BR')} post | `;
+        header += `💬 ${accountInfo.commentKarma.toLocaleString('pt-BR')} comment\n`;
+        header += `📅 Conta: ${accountInfo.accountAge}\n`;
+        header += `📧 Email: ${accountInfo.isVerifiedEmail ? 'Verificado ✅' : 'Não verificado ❌'}\n`;
     }
+    await sendTelegramMessage(Number(chatId), header);
 
-    // Separate eligible and not eligible
-    const eligible = guides.filter(g => g.isEligible);
-    const notEligible = guides.filter(g => !g.isEligible);
+    // Separate by eligibility
+    const ready = guides.filter(g => g.isEligible);
+    const needsKarma = guides.filter(g => !g.isEligible);
 
-    // Send eligible subs first
-    if (eligible.length > 0) {
-        msg += `✅ *${eligible.length} sub(s) prontos para verificar:*\n\n`;
-
-        for (const guide of eligible) {
-            msg += formatGuideMessage(guide);
+    // === MESSAGE 2: Ready to verify ===
+    if (ready.length > 0) {
+        let msg = `━━━ 🟢 *PRONTOS PARA VERIFICAR* (${ready.length}) ━━━\n\n`;
+        for (const g of ready) {
+            msg += formatGuideMsg(g);
         }
-    }
-
-    if (notEligible.length > 0) {
-        if (eligible.length > 0) msg += '\n━━━━━━━━━━━━━━━━━\n\n';
-        msg += `❌ *${notEligible.length} sub(s) ainda não elegíveis:*\n\n`;
-
-        for (const guide of notEligible) {
-            msg += formatGuideMessage(guide);
-        }
-    }
-
-    msg += '\n💡 _Verificação é manual. Siga os passos acima para cada sub._';
-    msg += '\n_Após verificar, os posts nesse sub serão retomados automaticamente!_';
-
-    // Telegram has a 4096 char limit per message
-    if (msg.length > 4000) {
-        // Split into multiple messages
-        const header = msg.substring(0, msg.indexOf('━━━━━━━━━━━━━━━━━') + 20);
-        await sendTelegramMessage(Number(chatId), header);
-
-        for (const guide of guides) {
-            const subMsg = formatGuideMessage(guide);
-            await sendTelegramMessage(Number(chatId), subMsg);
-            await new Promise(r => setTimeout(r, 500));
-        }
-    } else {
         await sendTelegramMessage(Number(chatId), msg);
     }
+
+    // === MESSAGE 3: Need karma ===
+    if (needsKarma.length > 0) {
+        let msg = `━━━ 🔴 *PRECISAM DE KARMA* (${needsKarma.length}) ━━━\n\n`;
+        for (const g of needsKarma) {
+            const safeName = g.subName.replace(/_/g, '\\_');
+            msg += `❌ *r/${safeName}* (${formatMembers(g.members)})\n`;
+
+            if (g.karmaRequired && accountInfo) {
+                const missing = g.karmaRequired - accountInfo.totalKarma;
+                msg += `   ⭐ Karma: ${accountInfo.totalKarma.toLocaleString('pt-BR')} / ${g.karmaRequired.toLocaleString('pt-BR')}`;
+                if (missing > 0) msg += ` (faltam ${missing.toLocaleString('pt-BR')})`;
+                msg += '\n';
+            }
+            if (g.accountAgeRequired) {
+                msg += `   📅 Idade mínima: ${g.accountAgeRequired}\n`;
+            }
+            msg += `   🤖 *Karma Builder ativado nesse sub*\n\n`;
+        }
+        await sendTelegramMessage(Number(chatId), msg);
+    }
+
+    // === MESSAGE 4: Discovered subs ===
+    if (discovered.length > 0) {
+        const newSubs = discovered.filter(d => !d.isAlreadyAdded);
+        const existingSubs = discovered.filter(d => d.isAlreadyAdded);
+
+        if (newSubs.length > 0) {
+            let msg = `━━━ 🆕 *NOVOS SUBS DESCOBERTOS* (${newSubs.length}) ━━━\n`;
+            msg += `(500k\\+ membros, NSFW, engajados)\n\n`;
+
+            for (const d of newSubs) {
+                const safeName = d.name.replace(/_/g, '\\_');
+                const verifTag = d.requiresVerification ? '🔒 verificação' : '🟢 aberto';
+                msg += `📌 *r/${safeName}* (${formatMembers(d.members)}) — ${verifTag}\n`;
+            }
+            msg += '\nResponda /aprovar para adicionar todos\\.';
+            await sendTelegramMessage(Number(chatId), msg);
+        }
+    }
+
+    // === MESSAGE 5: Summary ===
+    const total = guides.length;
+    let summary = `📊 *Resumo:* ${ready.length} pronto(s), ${needsKarma.length} precisam karma`;
+    if (discovered.filter(d => !d.isAlreadyAdded).length > 0) {
+        summary += `, ${discovered.filter(d => !d.isAlreadyAdded).length} novos descobertos`;
+    }
+    if (needsKarma.length > 0) {
+        summary += `\n\n🤖 _Karma Builder focando nos subs que precisam\\. Você será notificada quando estiver elegível\\!_`;
+    }
+    await sendTelegramMessage(Number(chatId), summary);
 }
 
-function formatGuideMessage(guide: VerificationGuide): string {
+function formatGuideMsg(guide: VerificationGuide): string {
     const safeName = guide.subName.replace(/_/g, '\\_');
-    const statusIcon = guide.isEligible ? '✅' : '❌';
-    const difficultyIcon = guide.difficulty === 'fácil' ? '🟢' : guide.difficulty === 'médio' ? '🟡' : '🔴';
+    const diffIcon = guide.difficulty === 'fácil' ? '🟢' : guide.difficulty === 'médio' ? '🟡' : '🔴';
 
-    let msg = `${statusIcon} *r/${safeName}* ${difficultyIcon} ${guide.difficulty}\n`;
+    let msg = `✅ *r/${safeName}* (${formatMembers(guide.members)}) ${diffIcon} ${guide.difficulty}\n`;
 
-    if (guide.karmaRequired) {
-        msg += `   ⭐ Karma necessário: ${guide.karmaRequired.toLocaleString('pt-BR')}\n`;
-    }
-    if (guide.accountAgeRequired) {
-        msg += `   📅 Idade mínima: ${guide.accountAgeRequired}\n`;
-    }
-    if (!guide.isEligible) {
-        const safeReason = guide.eligibilityReason.replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ');
-        msg += `   ⚠️ _${safeReason}_\n`;
-    }
-
-    msg += '\n';
     for (let i = 0; i < guide.steps.length; i++) {
-        const safeStep = guide.steps[i].replace(/[_*[\]()~`>#+=|{}.!-]/g, ' ');
-        msg += `   ${i + 1}\\. ${safeStep}\n`;
+        msg += `   ${i + 1}\\. ${escTg(guide.steps[i])}\n`;
     }
 
     if (guide.verificationLink) {
-        msg += `   🔗 Link: ${guide.verificationLink}\n`;
+        msg += `   🔗 ${guide.verificationLink}\n`;
     }
 
     msg += '\n';
@@ -499,15 +583,11 @@ function formatGuideMessage(guide: VerificationGuide): string {
 }
 
 // =============================================
-// 5. Manual trigger via Telegram command
+// 7. Manual Trigger via /verificar
 // =============================================
 
-/**
- * Manually trigger verification scan for a model
- * Called from Telegram command handler
- */
 export async function triggerVerificationGuide(modelId: string, chatId: number): Promise<void> {
-    await sendTelegramMessage(chatId, '🔍 Analisando subs que precisam de verificação...');
+    await sendTelegramMessage(chatId, '🔍 Analisando subs e buscando novos de alto valor...');
 
     const supabase = getSupabaseAdmin();
 
@@ -522,24 +602,20 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
         return;
     }
 
-    // Also scan ALL subs (not just flagged ones) to detect new verification requirements
+    // 1. Get all existing subs
     const { data: allSubs } = await supabase
         .from('subreddits')
-        .select('name, needs_verification, posting_rules, member_count')
+        .select('name, needs_verification, member_count')
         .eq('model_id', modelId)
         .eq('is_approved', true)
         .eq('is_banned', false);
 
-    if (!allSubs?.length) {
-        await sendTelegramMessage(chatId, '⚠️ Nenhum subreddit aprovado encontrado');
-        return;
-    }
+    const existingSubNames = new Set((allSubs || []).map(s => s.name.toLowerCase()));
 
-    // Force-scan rules for all subs to detect verification requirements
+    // 2. Force-scan existing subs for verification requirements
     let newlyFlagged = 0;
-    for (const sub of allSubs) {
-        if (sub.needs_verification) continue; // Already flagged
-
+    for (const sub of allSubs || []) {
+        if (sub.needs_verification) continue;
         try {
             const rules = await getSubRules(sub.name);
             if (rules?.requiresVerification) {
@@ -549,18 +625,79 @@ export async function triggerVerificationGuide(modelId: string, chatId: number):
                     .eq('model_id', modelId)
                     .eq('name', sub.name);
                 newlyFlagged++;
-                console.log(`  🔒 Newly flagged: r/${sub.name} requires verification`);
             }
         } catch { /* ignore */ }
-
-        // Rate limit
         await new Promise(r => setTimeout(r, 1500));
     }
 
     if (newlyFlagged > 0) {
-        await sendTelegramMessage(chatId, `🔍 Encontrei ${newlyFlagged} sub(s) adicional(is) que exigem verificação`);
+        await sendTelegramMessage(chatId, `🔒 ${newlyFlagged} sub(s) detectado(s) com verificação obrigatória`);
     }
 
-    // Now run the full scan for this model
-    await scanForModel({ ...model, phone: String(chatId) });
+    // 3. Get account info
+    await sendTelegramMessage(chatId, '👤 Buscando dados da sua conta Reddit...');
+    const accountInfo = await getRedditAccountInfo(modelId);
+
+    // 4. Discover new high-value subs (500k+, NSFW)
+    await sendTelegramMessage(chatId, '🌐 Descobrindo subs de alto valor (500k+ membros, NSFW)...');
+    const discovered = await discoverHighValueSubs(
+        model.bio || '',
+        model.persona || '',
+        existingSubNames
+    );
+
+    // 5. Add newly discovered subs to DB (unapproved)
+    const newlyDiscovered = discovered.filter(d => !d.isAlreadyAdded);
+    for (const d of newlyDiscovered) {
+        await supabase.from('subreddits').upsert({
+            model_id: modelId,
+            name: d.name,
+            is_approved: false,
+            nsfw: true,
+            suggested_by_ai: true,
+            member_count: d.members,
+            needs_verification: d.requiresVerification,
+            rules_summary: d.description.substring(0, 200),
+        }, { onConflict: 'model_id,name' });
+    }
+
+    // 6. Get all subs needing verification (refreshed)
+    const { data: verifSubs } = await supabase
+        .from('subreddits')
+        .select('name, member_count')
+        .eq('model_id', modelId)
+        .eq('is_approved', true)
+        .eq('needs_verification', true);
+
+    // 7. Generate guides
+    await sendTelegramMessage(chatId, `📋 Gerando guias de verificação para ${(verifSubs || []).length} sub(s)...`);
+
+    const guides: VerificationGuide[] = [];
+    for (const sub of (verifSubs || []).slice(0, 10)) {
+        const guide = await generateVerificationGuide(sub.name, accountInfo);
+        guides.push(guide);
+        await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // 8. Activate karma force for ineligible subs
+    const ineligible = guides.filter(g => !g.isEligible);
+    await activateKarmaForce(modelId, ineligible);
+
+    // 9. Send beautiful report
+    await sendReport(String(chatId), accountInfo, guides, discovered);
+
+    // 10. Log
+    await supabase.from('agent_logs').insert({
+        model_id: modelId,
+        action: 'verification_guide_sent',
+        details: {
+            subsScanned: guides.length,
+            eligible: guides.filter(g => g.isEligible).length,
+            karmaForce: ineligible.length,
+            discovered: discovered.length,
+            newSubs: newlyDiscovered.length,
+        },
+    });
+
+    console.log(`  ✅ Verification guide sent: ${guides.length} guides, ${discovered.length} discovered, ${ineligible.length} karma force`);
 }

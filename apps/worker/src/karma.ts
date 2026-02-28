@@ -84,46 +84,50 @@ async function buildKarmaForModel(
     const remaining = 15 - todayCount;
     const actionsThisRound = Math.min(remaining, 5); // Max 5 per cycle
 
-    // Get model's approved subs
+    // Get model's approved subs (including karma_priority flag)
     const { data: subs } = await supabase
         .from('subreddits')
-        .select('name, posting_rules')
+        .select('name, posting_rules, karma_priority')
         .eq('model_id', model.id)
         .eq('is_approved', true)
         .eq('is_banned', false);
 
     if (!subs?.length) return;
 
-    // PRIORITY: subs that require verification or have pending join requests
-    // These need engagement (comments, upvotes) to prove we're real members
-    const verificationSubs = subs.filter(s => {
+    // PRIORITY: subs with karma_priority=true (set by Verification Guide)
+    // These need active engagement to meet karma requirements for verification
+    const prioritySubs = subs.filter(s => s.karma_priority === true);
+
+    // Also check legacy posting_rules flags
+    const legacyVerifSubs = subs.filter(s => {
+        if (prioritySubs.some(p => p.name === s.name)) return false; // Already in priority
         const rules = s.posting_rules as Record<string, unknown> | null;
         if (!rules) return false;
-        return rules.requires_verification ||
-            rules.join_requested ||
-            rules.verification_required;
+        return rules.requires_verification || rules.join_requested;
     });
 
-    const regularSubs = subs.filter(s => !verificationSubs.includes(s));
+    const allPrioritySubs = [...prioritySubs, ...legacyVerifSubs];
+    const regularSubs = subs.filter(s => !allPrioritySubs.some(p => p.name === s.name));
 
-    // Pick targets: verification subs first, then fill with random
+    // Pick targets: 75% priority subs, 25% regular
     let targetSubs: typeof subs = [];
 
-    if (verificationSubs.length > 0) {
-        // Prioritize verification subs (at least 2 of 3 slots)
-        const shuffledVerif = [...verificationSubs].sort(() => Math.random() - 0.5);
-        const verifCount = Math.min(shuffledVerif.length, Math.max(2, actionsThisRound));
-        targetSubs = shuffledVerif.slice(0, verifCount);
+    if (allPrioritySubs.length > 0) {
+        // Give 75% of slots to priority subs
+        const prioritySlots = Math.max(Math.ceil(actionsThisRound * 0.75), 2);
+        const shuffledPriority = [...allPrioritySubs].sort(() => Math.random() - 0.5);
+        targetSubs = shuffledPriority.slice(0, Math.min(prioritySlots, shuffledPriority.length));
 
-        // Fill remaining slots with regular subs
-        if (targetSubs.length < actionsThisRound && regularSubs.length > 0) {
+        // Fill remaining with regular subs
+        const remaining = actionsThisRound - targetSubs.length;
+        if (remaining > 0 && regularSubs.length > 0) {
             const shuffledReg = [...regularSubs].sort(() => Math.random() - 0.5);
-            targetSubs.push(...shuffledReg.slice(0, actionsThisRound - targetSubs.length));
+            targetSubs.push(...shuffledReg.slice(0, remaining));
         }
 
-        console.log(`  🎯 Prioritizing verification subs: ${verificationSubs.map(s => s.name).join(', ')}`);
+        console.log(`  🔥 Karma Force: ${allPrioritySubs.map(s => s.name).join(', ')} (${prioritySubs.length} priority, ${legacyVerifSubs.length} legacy)`);
     } else {
-        // No verification subs — pick random
+        // No priority subs — pick random
         const shuffled = [...subs].sort(() => Math.random() - 0.5);
         targetSubs = shuffled.slice(0, actionsThisRound);
     }
