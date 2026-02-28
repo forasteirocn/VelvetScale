@@ -595,15 +595,64 @@ Which ONE sub is the best match?`,
         }
     } catch { /* use original */ }
 
-    // Validate post against sub rules before submitting
+    // Validate post against sub rules before submitting — retry with different subs if blocked
+    let blockedSubs: string[] = [];
+    let validatedSub = targetSub;
+    let validatedTitle = title;
+
     console.log(`🛡️ Validando post para r/${targetSub}...`);
-    const validation = await validatePostBeforeSubmit(targetSub, title, true, modelId);
+    let validation = await validatePostBeforeSubmit(targetSub, title, true, modelId);
+
+    // If blocked, try up to 3 alternative subs
+    while (!validation.isOk && blockedSubs.length < 3) {
+        const blockerMsg = validation.blockers.join(', ');
+        console.log(`  🚫 r/${validatedSub} bloqueado: ${blockerMsg}`);
+        blockedSubs.push(validatedSub);
+
+        // Pick next available sub (exclude blocked ones)
+        const remaining = subNames.filter(s => !blockedSubs.includes(s));
+        if (remaining.length === 0) {
+            await sendTelegramMessage(chatId, `⚠️ Todos os subs testados estão bloqueados.\nSubs tentados: ${blockedSubs.map(s => 'r/' + s).join(', ')}`);
+            return;
+        }
+
+        // Pick a random one from remaining
+        validatedSub = remaining[Math.floor(Math.random() * remaining.length)];
+        console.log(`  🔄 Tentando r/${validatedSub}...`);
+
+        // Generate new title for the new sub
+        try {
+            const subRulesCtx2 = await buildSubRulesContext(validatedSub, modelId);
+            const improved2 = await improveCaption(
+                caption || '🔥',
+                validatedSub,
+                model.bio || '',
+                model.persona || '',
+                { onlyfans: model.onlyfans_url, privacy: model.privacy_url },
+                imageAnalysis,
+                subRulesCtx2
+            );
+            validatedTitle = improved2.title;
+            console.log(`  📝 Novo título para r/${validatedSub}: "${validatedTitle}"`);
+        } catch { /* keep old title */ }
+
+        validation = await validatePostBeforeSubmit(validatedSub, validatedTitle, true, modelId);
+    }
 
     if (!validation.isOk) {
         const blockerMsg = validation.blockers.join(', ');
-        console.log(`  🚫 Post blocked: ${blockerMsg}`);
-        await sendTelegramMessage(chatId, `⚠️ Post bloqueado para r/${safeSub}: ${blockerMsg}\nTente outro sub.`);
+        console.log(`  🚫 Post blocked after ${blockedSubs.length + 1} attempts: ${blockerMsg}`);
+        await sendTelegramMessage(chatId, `⚠️ Post bloqueado após ${blockedSubs.length + 1} tentativas.\nSubs tentados: ${[...blockedSubs, validatedSub].map(s => 'r/' + s).join(', ')}`);
         return;
+    }
+
+    // Update the sub and title to the validated ones
+    targetSub = validatedSub;
+    title = validatedTitle;
+    const safeSub2 = targetSub.replace(/_/g, '\\_');
+
+    if (blockedSubs.length > 0) {
+        await sendTelegramMessage(chatId, `🔄 Sub alternativo encontrado: r/${safeSub2}`);
     }
 
     if (validation.warnings.length > 0) {
